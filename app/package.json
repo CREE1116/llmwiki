@@ -2,6 +2,8 @@
   "name": "llmwiki-desktop",
   "version": "1.0.0",
   "description": "Desktop interface for LLMWiki - Knowledge Graph, DB Explorer & LLM Query Logs",
+  "homepage": "https://github.com/CREE1116/llmwiki",
+  "desktopName": "LLMWiki",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -18,7 +20,10 @@
     "knowledge-graph",
     "electron"
   ],
-  "author": "",
+  "author": {
+    "name": "CREE1116",
+    "email": "CREE1116@users.noreply.github.com"
+  },
   "license": "MIT",
   "devDependencies": {
     "electron": "^41.7.1",
@@ -58,6 +63,8 @@
     },
     "linux": {
       "category": "Utility",
+      "maintainer": "CREE1116 <CREE1116@users.noreply.github.com>",
+      "syncDesktopName": true,
       "target": ["AppImage", "deb"]
     }
   }
