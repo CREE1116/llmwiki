@@ -57,9 +57,13 @@
       "target": ["nsis", "portable"]
     },
     "nsis": {
+      "artifactName": "LLMWiki-${version}-win-${arch}-setup.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "LLMWiki-${version}-win-${arch}-portable.${ext}"
     },
     "linux": {
       "category": "Utility",
