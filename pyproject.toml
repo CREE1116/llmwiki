@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmwiki"
+version = "1.0.0"
+description = "Lightweight, 3-tier LLM-native knowledge warehouse with MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "httpx>=0.25.0",
+    "networkx>=3.0",
+    "numpy>=1.24.0"
+]
+
+[project.optional-dependencies]
+pdf = ["pypdf>=4.0.0"]
+build = ["pyinstaller>=6.10"]
+
+[project.scripts]
+llmwiki = "llmwiki.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["llmwiki*"]
+exclude = ["app*", "data*", "vendor*", "scripts*"]

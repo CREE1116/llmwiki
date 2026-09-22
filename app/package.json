@@ -1,0 +1,64 @@
+{
+  "name": "llmwiki-desktop",
+  "version": "1.0.0",
+  "description": "Desktop interface for LLMWiki - Knowledge Graph, DB Explorer & LLM Query Logs",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build:cli": "node ../scripts/build_cli.js",
+    "dist": "npm run build:cli && electron-builder --publish never",
+    "dist:mac": "npm run build:cli && electron-builder --mac dmg zip --publish never",
+    "dist:win": "npm run build:cli && electron-builder --win nsis portable --publish never",
+    "dist:linux": "npm run build:cli && electron-builder --linux AppImage deb --publish never"
+  },
+  "keywords": [
+    "llm",
+    "wiki",
+    "knowledge-graph",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^41.7.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.llmwiki.desktop",
+    "productName": "LLMWiki",
+    "asar": true,
+    "directories": {
+      "output": "../dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime"
+      }
+    ],
+    "artifactName": "LLMWiki-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "category": "Utility",
+      "target": ["AppImage", "deb"]
+    }
+  }
+}

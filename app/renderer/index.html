@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLMWiki</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">L</div>
+        <div>
+          <div class="brand-name">LLMWiki</div>
+          <div class="brand-caption">Local knowledge workspace</div>
+        </div>
+      </div>
+
+      <nav class="nav-menu" aria-label="주요 메뉴">
+        <button class="nav-btn active" data-tab="tab-graph"><span class="nav-icon">⌘</span><span>그래프</span></button>
+        <button class="nav-btn" data-tab="tab-library"><span class="nav-icon">▤</span><span>자료</span></button>
+        <button class="nav-btn" data-tab="tab-activity"><span class="nav-icon">↗</span><span>활동</span></button>
+        <button class="nav-btn" data-tab="tab-ingest"><span class="nav-icon">＋</span><span>가져오기</span></button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="compact-stats">
+          <div><span>원문</span><strong id="stat-raw">—</strong></div>
+          <div><span>개념</span><strong id="stat-concepts">—</strong></div>
+          <div><span>연결</span><strong id="stat-relations">—</strong></div>
+        </div>
+        <button class="settings-btn" id="btn-open-settings"><span>연결 설정</span><span aria-hidden="true">›</span></button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <section id="tab-graph" class="view-panel active">
+        <header class="view-header">
+          <div>
+            <p class="eyebrow">KNOWLEDGE MAP</p>
+            <h1>지식 그래프</h1>
+            <p class="view-description">개념의 관계와 내용 유사성을 한눈에 탐색합니다.</p>
+          </div>
+          <div class="header-actions">
+            <label class="search-field">
+              <span>⌕</span>
+              <input id="graph-search-input" type="search" placeholder="개념 검색">
+            </label>
+            <div class="physics-control-wrapper">
+              <button class="btn btn-quiet" id="btn-toggle-physics">⚙ 물리 조절</button>
+              <div id="physics-panel" class="physics-popover hidden">
+                <div class="popover-header">
+                  <strong>그래프 물리 파라미터</strong>
+                  <button id="btn-reset-physics" class="text-btn">초기화</button>
+                </div>
+                <div class="control-group">
+                  <div class="control-label">
+                    <span>밀어내는 힘 (척력)</span>
+                    <span id="label-repulsion" class="control-value">1350</span>
+                  </div>
+                  <input id="slider-repulsion" type="range" min="300" max="4000" step="50" value="1350">
+                </div>
+                <div class="control-group">
+                  <div class="control-label">
+                    <span>연결 기본 거리</span>
+                    <span id="label-link-distance" class="control-value">135</span>
+                  </div>
+                  <input id="slider-link-distance" type="range" min="50" max="300" step="5" value="135">
+                </div>
+                <div class="control-group">
+                  <div class="control-label">
+                    <span>끌어당기는 힘 (인력)</span>
+                    <span id="label-link-strength" class="control-value">0.008</span>
+                  </div>
+                  <input id="slider-link-strength" type="range" min="0.001" max="0.030" step="0.001" value="0.008">
+                </div>
+                <div class="control-group">
+                  <div class="control-label">
+                    <span>화면 중심 인력 (중력)</span>
+                    <span id="label-center-pull" class="control-value">0.0018</span>
+                  </div>
+                  <input id="slider-center-pull" type="range" min="0.0005" max="0.0060" step="0.0001" value="0.0018">
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-quiet" id="btn-fit-graph">화면 맞춤</button>
+            <button class="btn btn-quiet" id="btn-reload-graph">새로고침</button>
+          </div>
+        </header>
+
+        <div class="graph-stage">
+          <canvas id="graph-canvas" aria-label="지식 그래프"></canvas>
+          <div class="graph-legend">
+            <span><i class="line solid"></i>명시된 관계</span>
+            <span><i class="line dashed"></i>내용 유사성</span>
+          </div>
+          <div id="graph-empty" class="empty-state hidden">
+            <strong>표시할 연결이 없습니다</strong>
+            <span>자료를 가져오면 개념과 연결이 여기에 나타납니다.</span>
+          </div>
+          <aside id="graph-inspector" class="inspector-drawer hidden" aria-label="개념 상세">
+            <div class="drawer-header">
+              <div>
+                <p class="eyebrow">CONCEPT</p>
+                <h2 id="inspector-title">개념 상세</h2>
+              </div>
+              <div class="drawer-actions">
+                <button id="btn-delete-current-concept" class="btn btn-danger-soft" title="개념 삭제">삭제</button>
+                <button id="btn-close-inspector" class="icon-btn" aria-label="닫기">×</button>
+              </div>
+            </div>
+            <div class="drawer-body">
+              <div class="badge-row">
+                <span id="inspector-type" class="badge badge-type"></span>
+                <span id="inspector-tags" class="tags-container"></span>
+              </div>
+              <section class="detail-section">
+                <h3>요약</h3>
+                <p id="inspector-summary" class="summary-text"></p>
+              </section>
+              <section class="detail-section">
+                <h3>핵심 메커니즘</h3>
+                <ul id="inspector-mechanisms" class="detail-list"></ul>
+              </section>
+              <section class="detail-section">
+                <h3>연결</h3>
+                <ul id="inspector-links" class="detail-list"></ul>
+              </section>
+              <section id="inspector-sources-container" class="detail-section">
+                <h3>출처 원문 (Sources)</h3>
+                <ul id="inspector-sources-list" class="sources-list"></ul>
+              </section>
+              <section id="inspector-raw-container" class="detail-section hidden">
+                <h3>원문 발췌</h3>
+                <pre id="inspector-raw-text" class="raw-excerpt"></pre>
+              </section>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="tab-library" class="view-panel">
+        <header class="view-header">
+          <div>
+            <p class="eyebrow">LIBRARY</p>
+            <h1>자료</h1>
+            <p class="view-description">정리된 개념과 보관된 원문을 찾아봅니다.</p>
+          </div>
+          <div class="header-actions">
+            <div class="segmented">
+              <button id="btn-db-tab-concepts" class="active">개념</button>
+              <button id="btn-db-tab-raw">원문</button>
+            </div>
+            <label class="search-field">
+              <span>⌕</span>
+              <input id="db-search-input" type="search" placeholder="자료 검색">
+            </label>
+            <button id="btn-refresh-library" class="btn btn-quiet">새로고침</button>
+          </div>
+        </header>
+        <div class="content-scroll">
+          <div class="bulk-toolbar" id="library-bulk-toolbar">
+            <span id="library-selected-count" class="bulk-count">0개 선택</span>
+            <div class="bulk-actions">
+              <button id="btn-select-visible" class="btn btn-quiet">전체 선택</button>
+              <button id="btn-clear-selection" class="btn btn-quiet" disabled>선택 해제</button>
+              <button id="btn-delete-selected" class="btn btn-danger-soft" disabled>선택 삭제</button>
+            </div>
+          </div>
+          <div id="db-concepts-panel" class="table-card">
+            <table class="data-table concept-table">
+              <thead><tr><th class="select-column"><input id="concept-select-all" class="selection-checkbox" type="checkbox" aria-label="표시된 개념 전체 선택"></th><th>개념</th><th>유형</th><th>요약</th><th>태그</th><th class="manage-column">관리</th></tr></thead>
+              <tbody id="db-concepts-tbody"></tbody>
+            </table>
+          </div>
+          <div id="db-raw-panel" class="table-card hidden">
+            <table class="data-table">
+              <thead><tr><th class="select-column"><input id="raw-select-all" class="selection-checkbox" type="checkbox" aria-label="표시된 원문 전체 선택"></th><th>문서</th><th>출처</th><th>분량</th><th>가져온 시각</th><th style="width: 72px; text-align: center;">관리</th></tr></thead>
+              <tbody id="db-raw-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-activity" class="view-panel">
+        <header class="view-header">
+          <div>
+            <p class="eyebrow">ACTIVITY</p>
+            <h1>활동</h1>
+            <p class="view-description">LLMWiki가 언제, 어떤 요청에 사용됐는지 확인합니다.</p>
+          </div>
+          <button id="btn-refresh-logs" class="btn btn-quiet">새로고침</button>
+        </header>
+        <div class="content-scroll">
+          <div class="table-card">
+            <table class="data-table">
+              <thead><tr><th>시각</th><th>호출자</th><th>동작</th><th>요청</th><th>결과</th></tr></thead>
+              <tbody id="logs-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-ingest" class="view-panel">
+        <header class="view-header">
+          <div>
+            <p class="eyebrow">IMPORT</p>
+            <h1>가져오기</h1>
+            <p class="view-description">문서나 웹페이지를 읽어 원문, 개념, 연결로 정리합니다.</p>
+          </div>
+        </header>
+        <div class="import-layout">
+          <section class="import-card">
+            <div class="step-index">01</div>
+            <h2>웹페이지</h2>
+            <p>기사, 문서, 논문 주소를 입력하세요.</p>
+            <div class="stack">
+              <input id="ingest-url-input" class="text-input" type="url" placeholder="https://example.com/document">
+              <div class="web-explore-options">
+                <label class="web-explore-toggle">
+                  <input id="ingest-explore-web" type="checkbox" checked>
+                  <span>연결된 문서도 탐색</span>
+                </label>
+                <div class="web-explore-limits">
+                  <label>
+                    <span>깊이</span>
+                    <select id="ingest-explore-depth" class="compact-select">
+                      <option value="1" selected>1</option>
+                      <option value="2">2</option>
+                      <option value="3">3</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>최대 문서</span>
+                    <select id="ingest-explore-pages" class="compact-select">
+                      <option value="5">5</option>
+                      <option value="8" selected>8</option>
+                      <option value="12">12</option>
+                      <option value="20">20</option>
+                    </select>
+                  </label>
+                </div>
+                <p class="web-explore-help">같은 사이트의 관련 문서만 제한적으로 따라갑니다. 나무위키는 문서 링크만 탐색합니다.</p>
+              </div>
+              <button id="btn-ingest-url" class="btn btn-primary">주소에서 가져오기</button>
+            </div>
+          </section>
+          <section class="import-card">
+            <div class="step-index">02</div>
+            <h2>로컬 파일</h2>
+            <p>PDF, Markdown, 텍스트 파일을 여러 개 선택할 수 있습니다.</p>
+            <div id="file-drop-zone" class="drop-zone">
+              <strong>파일을 놓거나 선택하세요</strong>
+              <span>PDF · MD · TXT · JSON</span>
+              <button id="btn-select-file" class="btn btn-quiet">파일 선택</button>
+            </div>
+            <div id="multi-files-container" class="file-selection hidden">
+              <div><strong id="multi-files-count">0개 파일</strong><button id="btn-clear-files" class="text-btn">선택 해제</button></div>
+              <ul id="selected-files-list"></ul>
+              <button id="btn-batch-ingest" class="btn btn-primary">선택한 파일 가져오기</button>
+            </div>
+          </section>
+          <div id="ingest-status-box" class="status-banner hidden">
+            <div class="status-header">
+              <div class="status-info">
+                <span id="ingest-status-dot" class="status-dot"></span>
+                <strong id="ingest-status-title">가져오는 중...</strong>
+              </div>
+              <span id="ingest-progress-percent" class="progress-percent">0%</span>
+            </div>
+            <div class="progress-bar-wrap">
+              <div id="ingest-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+            </div>
+            <div class="status-footer">
+              <span id="ingest-status-detail" class="status-detail">준비 중</span>
+              <span id="ingest-status-count" class="status-count"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="modal-raw" class="modal-backdrop hidden">
+    <div class="modal-card document-modal">
+      <div class="modal-header raw-modal-header">
+        <div class="raw-modal-meta">
+          <div class="badge-row">
+            <span id="modal-raw-id" class="badge badge-type">RAW</span>
+            <span id="modal-raw-chars" class="badge badge-tag"></span>
+            <span id="modal-raw-date" class="meta-date"></span>
+          </div>
+          <h2 id="modal-raw-title">원문</h2>
+          <div id="modal-raw-source" class="raw-source-path" title="출처"></div>
+        </div>
+        <div class="raw-modal-actions">
+          <div class="search-field raw-search-field">
+            <span>⌕</span>
+            <input id="modal-raw-search" type="search" placeholder="본문 검색">
+            <span id="modal-raw-match-count" class="match-count"></span>
+          </div>
+          <button id="btn-copy-raw" class="btn btn-quiet" title="전체 복사">복사</button>
+          <button id="btn-delete-current-raw" class="btn btn-danger-soft" title="원문 삭제">삭제</button>
+          <button id="btn-close-modal" class="icon-btn" aria-label="닫기">×</button>
+        </div>
+      </div>
+      <div class="modal-body raw-modal-body">
+        <div id="modal-raw-content" class="raw-viewer-text"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-settings" class="modal-backdrop hidden">
+    <div class="modal-card settings-modal">
+      <div class="modal-header">
+        <div><p class="eyebrow">CONNECTIONS</p><h2>연결 설정</h2></div>
+        <button id="btn-close-settings" class="icon-btn">×</button>
+      </div>
+      <div class="modal-body settings-body">
+        <section>
+          <div class="section-heading">
+            <div><h3>문서 처리 엔진</h3><p>이미 로그인된 로컬 도구를 사용합니다. API 키는 필요하지 않습니다.</p></div>
+          </div>
+          <div class="engine-grid">
+            <button class="engine-card" data-provider="ollama">
+              <span class="engine-status" id="status-ollama"></span>
+              <strong>Ollama</strong>
+              <small>완전 로컬 처리</small>
+              <select id="select-ollama-model" class="model-select hidden"></select>
+            </button>
+            <button class="engine-card" data-provider="codex_cli">
+              <span class="engine-status" id="status-codex-cli"></span>
+              <strong>Codex CLI</strong>
+              <small>현재 Codex 로그인 사용</small>
+            </button>
+            <button class="engine-card" data-provider="claude_cli">
+              <span class="engine-status" id="status-claude-cli"></span>
+              <strong>Claude Code</strong>
+              <small>현재 Claude 로그인 사용</small>
+            </button>
+          </div>
+        </section>
+
+        <section>
+          <div class="section-heading">
+            <div><h3>에이전트에서 LLMWiki 사용</h3><p>MCP로 연결하면 대화 중 이 지식 저장소를 검색할 수 있습니다.</p></div>
+          </div>
+          <div class="connection-list">
+            <div class="connection-row">
+              <div><strong>Codex</strong><span id="codex-connection-copy">확인 중</span></div>
+              <button id="btn-connect-codex" class="btn btn-quiet">연결</button>
+            </div>
+            <div class="connection-row">
+              <div><strong>Claude Code</strong><span id="claude-connection-copy">확인 중</span></div>
+              <button id="btn-connect-claude" class="btn btn-quiet">연결</button>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="modal-footer">
+        <span id="settings-message" class="settings-message"></span>
+        <button id="btn-save-settings" class="btn btn-primary">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

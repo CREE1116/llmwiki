@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# LLMWiki Desktop App launcher
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$DIR/app" && npm start

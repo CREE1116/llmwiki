@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+app/node_modules/
+app/runtime/
+build/
+dist/
+data/
+vendor/
+*.spec
