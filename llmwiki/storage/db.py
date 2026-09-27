@@ -503,30 +503,45 @@ class Database:
             conn.commit()
             return True
 
-    def get_full_graph_data(self) -> Dict[str, Any]:
-        """Return all nodes and edges for visualization in Electron/Web."""
+    def get_full_graph_data(self, workspace: Optional[str] = None) -> Dict[str, Any]:
+        """Return all nodes and edges for visualization in Electron/Web, optionally scoped to a workspace."""
         with self.get_connection() as conn:
-            c_cursor = conn.execute("""
-            SELECT c.id, c.name, c.type, c.summary, c.tags_json, COUNT(s.id) as sources_count
-            FROM concepts c
-            LEFT JOIN sources s ON c.id = s.concept_id
-            GROUP BY c.id
-            """)
+            if workspace and workspace != "all":
+                c_cursor = conn.execute("""
+                SELECT c.id, c.name, c.type, c.summary, c.tags_json, c.workspace_id, COUNT(s.id) as sources_count
+                FROM concepts c
+                LEFT JOIN sources s ON c.id = s.concept_id
+                WHERE c.workspace_id = ?
+                GROUP BY c.id
+                """, (workspace,))
+            else:
+                c_cursor = conn.execute("""
+                SELECT c.id, c.name, c.type, c.summary, c.tags_json, c.workspace_id, COUNT(s.id) as sources_count
+                FROM concepts c
+                LEFT JOIN sources s ON c.id = s.concept_id
+                GROUP BY c.id
+                """)
             nodes = []
+            node_ids = set()
             for r in c_cursor.fetchall():
                 tags = json.loads(r["tags_json"]) if r["tags_json"] else []
+                node_ids.add(r["id"])
                 nodes.append({
                     "id": r["id"],
                     "name": r["name"],
                     "type": r["type"],
                     "summary": r["summary"] or "",
                     "tags": tags,
+                    "workspace": r["workspace_id"] or "default",
                     "sources_count": r["sources_count"] or 1
                 })
 
             e_cursor = conn.execute("SELECT source_id, relation_type, target_id, reason FROM relations")
             edges = []
             for r in e_cursor.fetchall():
+                if workspace and workspace != "all":
+                    if r["source_id"] not in node_ids or r["target_id"] not in node_ids:
+                        continue
                 edges.append({
                     "source": r["source_id"],
                     "target": r["target_id"],

@@ -15,6 +15,8 @@ function loadSavedPhysics() {
 
 const state = {
   activeTab: 'tab-graph',
+  currentWorkspace: 'default',
+  workspaces: [],
   graph: { nodes: [], edges: [] },
   transform: { x: 0, y: 0, scale: 1 },
   selectedNode: null,
@@ -42,6 +44,7 @@ const ctx = canvas.getContext('2d');
 
 window.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
+  setupWorkspaces();
   setupGraph();
   setupPhysicsControls();
   setupLibrary();
@@ -49,6 +52,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupIngest();
   setupModals();
   setupSettings();
+  await loadWorkspaces();
   await refreshAll();
   setInterval(async () => {
     await loadStats();
@@ -84,8 +88,8 @@ function activateTab(tabId, { fit = true } = {}) {
   }
 }
 
-async function loadStats() {
-  const stats = await window.llmwiki.getStats();
+async function loadStats(ws = state.currentWorkspace) {
+  const stats = await window.llmwiki.getStats(ws);
   if (!stats || stats.error) return;
   document.getElementById('stat-raw').textContent = formatNumber(stats.total_sources);
   document.getElementById('stat-concepts').textContent = formatNumber(stats.total_concepts);
@@ -232,8 +236,8 @@ function resizeCanvas() {
   canvas.height = Math.round(state.canvasHeight * dpr);
 }
 
-async function loadGraph() {
-  const data = await window.llmwiki.getGraph();
+async function loadGraph(ws = state.currentWorkspace) {
+  const data = await window.llmwiki.getGraph(ws);
   if (!data || data.error || !Array.isArray(data.nodes)) return;
   const existing = new Map(state.graph.nodes.map(node => [node.id, node]));
   const count = data.nodes.length;
@@ -697,15 +701,15 @@ function setLibraryMode(mode) {
   const query = searchInput.value.trim();
   if (concepts) {
     if (!query) renderConcepts(state.concepts);
-    else window.llmwiki.search({ query, mode: 'hybrid', limit: 50 }).then(hits => renderConcepts(hits || []));
+    else window.llmwiki.search({ query, mode: 'hybrid', limit: 50, workspace: state.currentWorkspace }).then(hits => renderConcepts(hits || []));
   } else {
     renderRawDocs(filterRawDocs(query));
   }
   updateLibraryBulkControls();
 }
 
-async function loadConcepts() {
-  state.concepts = (await window.llmwiki.listConcepts()) || [];
+async function loadConcepts(ws = state.currentWorkspace) {
+  state.concepts = (await window.llmwiki.listConcepts(ws)) || [];
   pruneLibrarySelection('concepts', new Set(state.concepts.map(concept => concept.concept_id || concept.id)));
   if (state.libraryMode === 'concepts') renderConcepts(state.concepts);
 }
@@ -793,8 +797,8 @@ function openConceptFromLibrary(concept) {
   showInspector(graphNode);
 }
 
-async function loadRawDocs() {
-  state.rawDocs = (await window.llmwiki.listRaw()) || [];
+async function loadRawDocs(ws = state.currentWorkspace) {
+  state.rawDocs = (await window.llmwiki.listRaw(ws)) || [];
   pruneLibrarySelection('raw', new Set(state.rawDocs.map(doc => doc.id)));
   if (state.libraryMode === 'raw') renderRawDocs(filterRawDocs(document.getElementById('db-search-input').value.trim()));
 }
@@ -1122,7 +1126,8 @@ function setupIngest() {
 
     beginLiveGraphRefresh();
     try {
-      const result = await window.llmwiki.ingest([url], { explore, depth, maxPages, greedy });
+      const targetWs = document.getElementById('ingest-target-workspace')?.value || state.currentWorkspace;
+      const result = await window.llmwiki.ingest([url], { explore, depth, maxPages, greedy, workspace: targetWs });
       if (result && !result.error) {
         const documents = Array.isArray(result) ? result.length : 1;
         const concepts = Array.isArray(result)
@@ -1209,7 +1214,8 @@ function setupIngest() {
       });
 
       try {
-        const result = await window.llmwiki.ingest([fileItem.path]);
+        const targetWs = document.getElementById('ingest-target-workspace')?.value || state.currentWorkspace;
+        const result = await window.llmwiki.ingest([fileItem.path], { workspace: targetWs });
         if (result && !result.error) {
           fileItem.status = 'success';
           const concepts = Array.isArray(result)
@@ -1390,6 +1396,7 @@ function setupModals() {
     if (event.key === 'Escape') {
       document.getElementById('modal-raw').classList.add('hidden');
       document.getElementById('modal-settings').classList.add('hidden');
+      document.getElementById('modal-workspaces').classList.add('hidden');
       closeInspector();
       return;
     }
@@ -1629,4 +1636,197 @@ function setSettingsMessage(message, type = '') {
   const element = document.getElementById('settings-message');
   element.textContent = message;
   element.className = `settings-message ${type}`.trim();
+}
+
+// Workspaces Management
+function setupWorkspaces() {
+  const modal = document.getElementById('modal-workspaces');
+  const openBtn = document.getElementById('btn-open-workspace-modal');
+  const closeBtn = document.getElementById('btn-close-workspaces');
+  if (openBtn) openBtn.addEventListener('click', () => modal.classList.remove('hidden'));
+  if (closeBtn) closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
+  if (modal) {
+    modal.addEventListener('click', e => {
+      if (e.target === modal) modal.classList.add('hidden');
+    });
+  }
+
+  const select = document.getElementById('workspace-select');
+  if (select) {
+    select.addEventListener('change', e => {
+      switchWorkspace(e.target.value);
+    });
+  }
+
+  const createBtn = document.getElementById('btn-create-workspace');
+  if (createBtn) createBtn.addEventListener('click', createNewWorkspace);
+
+  const routeBtn = document.getElementById('btn-test-route');
+  if (routeBtn) routeBtn.addEventListener('click', testWorkspaceRouting);
+}
+
+async function loadWorkspaces() {
+  const workspaces = (await window.llmwiki.listWorkspaces()) || [];
+  state.workspaces = workspaces;
+  const current = (await window.llmwiki.currentWorkspace())?.active_workspace || 'default';
+  if (!state.currentWorkspace || state.currentWorkspace === 'default') {
+    state.currentWorkspace = current;
+  }
+
+  const select = document.getElementById('workspace-select');
+  if (select) {
+    select.replaceChildren();
+    const allOpt = document.createElement('option');
+    allOpt.value = 'all';
+    allOpt.textContent = '🌐 전체 (All Workspaces)';
+    allOpt.selected = (state.currentWorkspace === 'all');
+    select.appendChild(allOpt);
+
+    workspaces.forEach(ws => {
+      const opt = document.createElement('option');
+      opt.value = ws.id;
+      const count = ws.concepts || 0;
+      opt.textContent = `${ws.name || ws.id} (${count})`;
+      opt.selected = (ws.id === state.currentWorkspace);
+      select.appendChild(opt);
+    });
+  }
+
+  const ingestSelect = document.getElementById('ingest-target-workspace');
+  if (ingestSelect) {
+    ingestSelect.replaceChildren();
+    workspaces.forEach(ws => {
+      const opt = document.createElement('option');
+      opt.value = ws.id;
+      opt.textContent = `${ws.name || ws.id} (${ws.id})`;
+      opt.selected = (ws.id === state.currentWorkspace || (state.currentWorkspace === 'all' && ws.id === 'default'));
+      ingestSelect.appendChild(opt);
+    });
+  }
+
+  renderWorkspacesTable(workspaces, state.currentWorkspace);
+}
+
+function renderWorkspacesTable(workspaces, activeId) {
+  const tbody = document.getElementById('workspaces-tbody');
+  if (!tbody) return;
+  if (!workspaces.length) {
+    return renderEmptyRow(tbody, 6, '등록된 워크스페이스가 없습니다.');
+  }
+
+  tbody.replaceChildren(...workspaces.map(ws => {
+    const tr = document.createElement('tr');
+    const isActive = ws.id === activeId;
+
+    const idCell = document.createElement('td');
+    const code = document.createElement('code');
+    code.textContent = ws.id;
+    idCell.appendChild(code);
+
+    const nameCell = makeTextCell(ws.name || '—');
+    const descCell = makeTextCell(ws.description || '—');
+    const countCell = makeTextCell(`${formatNumber(ws.concepts || 0)}개`);
+
+    const statusCell = document.createElement('td');
+    const badge = document.createElement('span');
+    badge.className = isActive ? 'badge badge-type' : 'badge badge-tag';
+    badge.textContent = isActive ? '현재 활성' : '대기';
+    statusCell.appendChild(badge);
+
+    const actionCell = document.createElement('td');
+    actionCell.style.textAlign = 'center';
+    if (ws.id !== 'default') {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn-delete-row';
+      delBtn.textContent = '삭제';
+      delBtn.title = '워크스페이스 삭제';
+      delBtn.addEventListener('click', () => deleteWorkspace(ws.id));
+      actionCell.appendChild(delBtn);
+    } else {
+      actionCell.textContent = '기본값';
+    }
+
+    tr.append(idCell, nameCell, descCell, countCell, statusCell, actionCell);
+    return tr;
+  }));
+}
+
+async function switchWorkspace(wsId) {
+  state.currentWorkspace = wsId;
+  if (wsId !== 'all') {
+    await window.llmwiki.switchWorkspace(wsId);
+  }
+  const select = document.getElementById('workspace-select');
+  if (select) select.value = wsId;
+  const ingestSelect = document.getElementById('ingest-target-workspace');
+  if (ingestSelect && wsId !== 'all') ingestSelect.value = wsId;
+
+  await refreshAll();
+  await loadWorkspaces();
+}
+
+async function createNewWorkspace() {
+  const idInput = document.getElementById('input-new-ws-id');
+  const nameInput = document.getElementById('input-new-ws-name');
+  const descInput = document.getElementById('input-new-ws-desc');
+  const id = idInput.value.trim().toLowerCase();
+  const name = nameInput.value.trim();
+  const desc = descInput.value.trim();
+
+  if (!id) {
+    alert('워크스페이스 ID를 입력해주세요.');
+    return;
+  }
+  if (!/^[a-z0-9_-]+$/.test(id)) {
+    alert('워크스페이스 ID는 영문 소문자, 숫자, 언더스코어(_), 하이픈(-)만 사용할 수 있습니다.');
+    return;
+  }
+
+  const res = await window.llmwiki.createWorkspace({ id, name: name || id, desc });
+  if (res?.error) {
+    alert(`생성 실패: ${res.error}`);
+    return;
+  }
+  idInput.value = '';
+  nameInput.value = '';
+  descInput.value = '';
+  await switchWorkspace(id);
+}
+
+async function deleteWorkspace(id) {
+  if (id === 'default') {
+    alert('기본(default) 워크스페이스는 삭제할 수 없습니다.');
+    return;
+  }
+  if (!confirm(`'${id}' 워크스페이스를 삭제하시겠습니까? 해당 워크스페이스의 개념들은 기본 워크스페이스로 귀속되거나 정리됩니다.`)) {
+    return;
+  }
+  const res = await window.llmwiki.deleteWorkspace(id);
+  if (res?.error) {
+    alert(`삭제 실패: ${res.error}`);
+    return;
+  }
+  await switchWorkspace('default');
+}
+
+async function testWorkspaceRouting() {
+  const queryInput = document.getElementById('input-route-query');
+  const resultBox = document.getElementById('route-result-box');
+  const query = queryInput.value.trim();
+  if (!query) {
+    resultBox.classList.remove('hidden');
+    resultBox.textContent = '질의어를 입력해주세요.';
+    return;
+  }
+
+  resultBox.classList.remove('hidden');
+  resultBox.textContent = '질의어를 임베딩하고 워크스페이스 중심점과 비교 분석 중…';
+
+  const res = await window.llmwiki.routeWorkspace(query);
+  if (res && res.recommended_workspace) {
+    const similarity = res.score ? (res.score * 100).toFixed(1) : 0;
+    resultBox.innerHTML = `<strong>추천 워크스페이스:</strong> <code style="color:#58a6ff; font-weight:700;">${res.recommended_workspace}</code> (유사도: ${similarity}%)<br><small style="color:var(--muted)">검색 및 질의 시 이 워크스페이스가 최우선으로 매칭됩니다.</small>`;
+  } else {
+    resultBox.innerHTML = `<strong>결과:</strong> 특정 워크스페이스와의 유사도 임계치를 넘지 않아 <code style="color:#58a6ff;">전체(All)</code> 대상 전역 탐색이 권장됩니다.`;
+  }
 }

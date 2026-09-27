@@ -13,7 +13,19 @@
         <div class="brand-mark">L</div>
         <div>
           <div class="brand-name">LLMWiki</div>
-          <div class="brand-caption">Local knowledge workspace</div>
+          <div class="brand-caption">Local knowledge warehouse</div>
+        </div>
+      </div>
+
+      <div class="workspace-switcher">
+        <div class="workspace-switcher-header">
+          <span class="workspace-eyebrow">WORKSPACE</span>
+          <button id="btn-open-workspace-modal" class="icon-btn-micro" title="워크스페이스 관리 및 생성">⚙</button>
+        </div>
+        <div class="workspace-select-wrapper">
+          <select id="workspace-select" class="workspace-dropdown" aria-label="활성 워크스페이스 선택">
+            <option value="default">default (기본)</option>
+          </select>
         </div>
       </div>
 
@@ -211,6 +223,10 @@
             <h1>가져오기</h1>
             <p class="view-description">문서나 웹페이지를 읽어 원문, 개념, 연결로 정리합니다.</p>
           </div>
+          <div class="ingest-ws-box">
+            <span class="ingest-ws-label">저장 워크스페이스</span>
+            <select id="ingest-target-workspace" class="compact-select"></select>
+          </div>
         </header>
         <div class="import-layout">
           <section class="import-card">
@@ -383,6 +399,73 @@
       <div class="modal-footer">
         <span id="settings-message" class="settings-message"></span>
         <button id="btn-save-settings" class="btn btn-primary">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-workspaces" class="modal-backdrop hidden">
+    <div class="modal-card workspaces-modal">
+      <div class="modal-header">
+        <div><p class="eyebrow">WORKSPACES</p><h2>지식 워크스페이스 관리</h2></div>
+        <button id="btn-close-workspaces" class="icon-btn">×</button>
+      </div>
+      <div class="modal-body workspaces-body">
+        <section class="workspaces-section">
+          <div class="section-heading">
+            <div>
+              <h3>워크스페이스 목록</h3>
+              <p>프로젝트별로 분리된 지식 도메인입니다. 전환하거나 클릭하여 탐색할 수 있습니다.</p>
+            </div>
+          </div>
+          <div class="table-card">
+            <table class="data-table">
+              <thead><tr><th>ID</th><th>이름</th><th>설명</th><th>개념</th><th>상태</th><th style="width: 80px; text-align: center;">관리</th></tr></thead>
+              <tbody id="workspaces-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="workspaces-section">
+          <div class="section-heading">
+            <div>
+              <h3>새 워크스페이스 생성</h3>
+              <p>새로운 연구 주제나 프로젝트를 위한 독립된 지식 영역을 만듭니다.</p>
+            </div>
+          </div>
+          <div class="workspace-form-card">
+            <div class="form-row-2">
+              <label>
+                <span>워크스페이스 ID (영문/숫자/언더스코어)</span>
+                <input id="input-new-ws-id" class="text-input" type="text" placeholder="예: bio_research, web_arch">
+              </label>
+              <label>
+                <span>표시 이름</span>
+                <input id="input-new-ws-name" class="text-input" type="text" placeholder="예: 바이오 연구, 웹 아키텍처">
+              </label>
+            </div>
+            <label style="margin-top: 10px; display: block;">
+              <span>설명 (시맨틱 라우팅 및 개요에 활용)</span>
+              <input id="input-new-ws-desc" class="text-input" type="text" placeholder="예: 분자생물학 논문 및 단백질 도메인 지식">
+            </label>
+            <div class="form-actions-right">
+              <button id="btn-create-workspace" class="btn btn-primary">워크스페이스 생성</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="workspaces-section">
+          <div class="section-heading">
+            <div>
+              <h3>질의 시맨틱 자동 라우팅 테스트</h3>
+              <p>질의어를 입력하면 각 워크스페이스의 벡터 중심점(Centroid)과 비교하여 가장 적합한 워크스페이스를 추천합니다.</p>
+            </div>
+          </div>
+          <div class="route-test-row">
+            <input id="input-route-query" class="text-input" type="text" placeholder="예: CRISPR Cas9 유전자 편집 메커니즘">
+            <button id="btn-test-route" class="btn btn-quiet">자동 라우팅 분석</button>
+          </div>
+          <div id="route-result-box" class="route-result-box hidden"></div>
+        </section>
       </div>
     </div>
   </div>

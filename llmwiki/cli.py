@@ -620,7 +620,8 @@ def cmd_logs(args):
 
 def cmd_graph_data(args):
     store = Store()
-    data = store.db.get_full_graph_data()
+    target_ws = getattr(args, "workspace", None)
+    data = store.db.get_full_graph_data(workspace=target_ws)
     print(json.dumps(data, ensure_ascii=False, indent=2 if getattr(args, "pretty", False) else None))
 
 def cmd_list_concepts(args):
@@ -847,6 +848,7 @@ def main():
 
     # Graph-Data (Full JSON for Electron/D3/Cytoscape)
     p_graph_data = subparsers.add_parser("graph-data", help="Export full nodes and edges in JSON")
+    p_graph_data.add_argument("--workspace", "-w", default=None, help="Scope graph data to workspace")
     p_graph_data.add_argument("--pretty", action="store_true", help="Pretty print JSON")
 
     # Workspace

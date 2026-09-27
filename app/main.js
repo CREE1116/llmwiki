@@ -113,18 +113,25 @@ app.on('window-all-closed', () => {
 
 // ----------------- IPC Handlers -----------------
 
-ipcMain.handle('llmwiki:get-stats', async () => {
-  const res = await runCLI(['stats', '--json']);
+ipcMain.handle('llmwiki:get-stats', async (event, workspace) => {
+  const args = ['stats'];
+  if (workspace && workspace !== 'all') args.push('--workspace', workspace);
+  args.push('--json');
+  const res = await runCLI(args);
   return parseJsonSafe(res.stdout) || { error: res.error || 'Failed to parse stats' };
 });
 
-ipcMain.handle('llmwiki:get-graph', async () => {
-  const res = await runCLI(['graph-data']);
+ipcMain.handle('llmwiki:get-graph', async (event, workspace) => {
+  const args = ['graph-data'];
+  if (workspace && workspace !== 'all') args.push('--workspace', workspace);
+  const res = await runCLI(args);
   return parseJsonSafe(res.stdout) || { nodes: [], edges: [], error: res.error };
 });
 
-ipcMain.handle('llmwiki:search', async (event, { query, mode, limit }) => {
-  const args = ['search', query || '', '--mode', mode || 'hybrid', '--limit', String(limit || 10), '--caller', 'desktop_app', '--json'];
+ipcMain.handle('llmwiki:search', async (event, { query, mode, limit, workspace }) => {
+  const args = ['search', query || '', '--mode', mode || 'hybrid', '--limit', String(limit || 10), '--caller', 'desktop_app'];
+  if (workspace && workspace !== 'all') args.push('--workspace', workspace);
+  args.push('--json');
   const res = await runCLI(args);
   return parseJsonSafe(res.stdout) || [];
 });
@@ -134,13 +141,19 @@ ipcMain.handle('llmwiki:get-concept', async (event, conceptId) => {
   return parseJsonSafe(res.stdout) || { error: res.error || 'Concept not found' };
 });
 
-ipcMain.handle('llmwiki:list-concepts', async () => {
-  const res = await runCLI(['list-concepts', '--limit', '200', '--json']);
+ipcMain.handle('llmwiki:list-concepts', async (event, workspace) => {
+  const args = ['list-concepts', '--limit', '200'];
+  if (workspace && workspace !== 'all') args.push('--workspace', workspace);
+  args.push('--json');
+  const res = await runCLI(args);
   return parseJsonSafe(res.stdout) || [];
 });
 
-ipcMain.handle('llmwiki:list-raw', async () => {
-  const res = await runCLI(['list-raw', '--limit', '200', '--json']);
+ipcMain.handle('llmwiki:list-raw', async (event, workspace) => {
+  const args = ['list-raw', '--limit', '200'];
+  if (workspace && workspace !== 'all') args.push('--workspace', workspace);
+  args.push('--json');
+  const res = await runCLI(args);
   return parseJsonSafe(res.stdout) || [];
 });
 
@@ -164,12 +177,50 @@ ipcMain.handle('llmwiki:get-logs', async () => {
   return parseJsonSafe(res.stdout) || [];
 });
 
+// Workspace Handlers
+ipcMain.handle('llmwiki:list-workspaces', async () => {
+  const res = await runCLI(['workspace', 'list', '--json']);
+  return parseJsonSafe(res.stdout) || [];
+});
+
+ipcMain.handle('llmwiki:create-workspace', async (event, { id, name, desc }) => {
+  const args = ['workspace', 'create', id];
+  if (name) args.push('--name', name);
+  if (desc) args.push('--desc', desc);
+  args.push('--json');
+  const res = await runCLI(args);
+  return parseJsonSafe(res.stdout) || { error: res.error || 'Failed to create workspace' };
+});
+
+ipcMain.handle('llmwiki:switch-workspace', async (event, id) => {
+  const res = await runCLI(['workspace', 'use', id, '--json']);
+  return parseJsonSafe(res.stdout) || { error: res.error || 'Failed to switch workspace' };
+});
+
+ipcMain.handle('llmwiki:delete-workspace', async (event, id) => {
+  const res = await runCLI(['workspace', 'delete', id, '--json']);
+  return parseJsonSafe(res.stdout) || { error: res.error || 'Failed to delete workspace' };
+});
+
+ipcMain.handle('llmwiki:current-workspace', async () => {
+  const res = await runCLI(['workspace', 'current', '--json']);
+  return parseJsonSafe(res.stdout) || { active_workspace: 'default' };
+});
+
+ipcMain.handle('llmwiki:route-workspace', async (event, query) => {
+  const res = await runCLI(['workspace', 'route', query, '--json']);
+  return parseJsonSafe(res.stdout) || null;
+});
+
 ipcMain.handle('llmwiki:ingest', async (event, request) => {
   const legacyRequest = Array.isArray(request) || typeof request === 'string';
   const sources = legacyRequest ? request : request?.sources;
   const options = legacyRequest ? {} : (request?.options || {});
   const srcList = Array.isArray(sources) ? sources : [sources].filter(Boolean);
   const args = ['ingest', ...srcList];
+  if (options.workspace && options.workspace !== 'all') {
+    args.push('--workspace', options.workspace);
+  }
   if (options.explore) {
     const depth = Math.max(0, Math.min(20, Number(options.depth) || 1));
     const maxPages = options.greedy ? 0 : Math.max(1, Math.min(2000, Number(options.maxPages) || 8));
