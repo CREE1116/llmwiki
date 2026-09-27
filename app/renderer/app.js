@@ -63,7 +63,25 @@ window.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function refreshAll() {
-  await Promise.all([loadStats(), loadGraph(), loadConcepts(), loadRawDocs(), loadLogs()]);
+  // Prioritize active tab data to eliminate Python process congestion
+  try {
+    await loadStats();
+    if (state.activeTab === 'tab-graph') {
+      await loadGraph();
+      // Lazy load background items without blocking UI
+      loadConcepts().catch(() => {});
+      loadRawDocs().catch(() => {});
+    } else if (state.activeTab === 'tab-library') {
+      await Promise.all([loadConcepts(), loadRawDocs()]);
+      loadGraph().catch(() => {});
+    } else {
+      await loadGraph();
+      loadConcepts().catch(() => {});
+      loadRawDocs().catch(() => {});
+    }
+  } catch (err) {
+    console.warn('refreshAll failed:', err);
+  }
 }
 
 function setupNavigation() {
@@ -82,11 +100,19 @@ function activateTab(tabId, { fit = true } = {}) {
     panel.classList.toggle('active', panel.id === tabId);
   });
   state.activeTab = tabId;
+
   if (tabId === 'tab-graph') {
     requestAnimationFrame(() => {
       resizeCanvas();
       if (fit) fitGraph();
+      ensureGraphLoop();
     });
+  } else if (tabId === 'tab-library') {
+    // When opening library tab, ensure fresh list
+    loadConcepts();
+    loadRawDocs();
+  } else if (tabId === 'tab-activity') {
+    loadLogs();
   }
 }
 
@@ -283,39 +309,30 @@ async function loadGraph(ws = state.currentWorkspace) {
   if (!existing.size) requestAnimationFrame(fitGraph);
 }
 
-const liveGraphRefresh = {
-  users: 0,
-  timer: null,
-  busy: false,
-};
+let liveRefreshDebounceTimer = null;
 
-async function tickLiveGraphRefresh() {
-  if (liveGraphRefresh.busy) return;
-  liveGraphRefresh.busy = true;
-  try {
-    await Promise.all([loadGraph(), loadStats()]);
-  } catch (err) {
-    console.warn('Live graph refresh failed:', err);
-  } finally {
-    liveGraphRefresh.busy = false;
-  }
+function triggerLiveGraphDebounced() {
+  if (liveRefreshDebounceTimer) return;
+  liveRefreshDebounceTimer = setTimeout(async () => {
+    liveRefreshDebounceTimer = null;
+    try {
+      await Promise.all([loadGraph(state.currentWorkspace), loadStats(state.currentWorkspace)]);
+    } catch (e) {}
+  }, 350);
 }
 
 function beginLiveGraphRefresh() {
-  liveGraphRefresh.users += 1;
-  if (liveGraphRefresh.timer) return;
-  tickLiveGraphRefresh();
-  liveGraphRefresh.timer = setInterval(tickLiveGraphRefresh, 600);
+  triggerLiveGraphDebounced();
 }
 
 async function endLiveGraphRefresh() {
-  liveGraphRefresh.users = Math.max(0, liveGraphRefresh.users - 1);
-  if (liveGraphRefresh.users > 0) return;
-  if (liveGraphRefresh.timer) {
-    clearInterval(liveGraphRefresh.timer);
-    liveGraphRefresh.timer = null;
+  if (liveRefreshDebounceTimer) {
+    clearTimeout(liveRefreshDebounceTimer);
+    liveRefreshDebounceTimer = null;
   }
-  await tickLiveGraphRefresh();
+  try {
+    await Promise.all([loadGraph(state.currentWorkspace), loadStats(state.currentWorkspace)]);
+  } catch (e) {}
 }
 
 function fitGraph() {
@@ -456,7 +473,22 @@ function updatePhysics() {
   });
 }
 
+let isGraphLoopRunning = false;
+
+function ensureGraphLoop() {
+  if (!isGraphLoopRunning && state.activeTab === 'tab-graph') {
+    isGraphLoopRunning = true;
+    requestAnimationFrame(renderGraph);
+  }
+}
+
 function renderGraph() {
+  if (state.activeTab !== 'tab-graph') {
+    isGraphLoopRunning = false;
+    return; // Completely stop animation loop when user is on another tab
+  }
+  isGraphLoopRunning = true;
+
   updatePhysics();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1139,9 +1171,8 @@ function setupIngest() {
           indeterminate: true,
           state: 'running'
         });
-        // 즉각적인 그래프 및 통계 라이브 갱신
-        loadGraph(state.currentWorkspace);
-        loadStats(state.currentWorkspace);
+        // 즉각적이고 부드러운 디바운스 라이브 갱신
+        triggerLiveGraphDebounced();
       }
     });
   }
@@ -1195,7 +1226,8 @@ function setupIngest() {
 
     beginLiveGraphRefresh();
     try {
-      const targetWs = document.getElementById('ingest-target-workspace')?.value || state.currentWorkspace;
+      const selectWs = document.getElementById('ingest-target-workspace')?.value;
+      const targetWs = (selectWs && selectWs !== 'all') ? selectWs : (state.currentWorkspace !== 'all' ? state.currentWorkspace : 'default');
       const result = await window.llmwiki.ingest([url], { explore, depth, maxPages, greedy, workspace: targetWs });
       if (result && !result.error) {
         const documents = result.total_pages || (Array.isArray(result) ? result.length : (result.results ? result.results.length : 1));
@@ -1285,7 +1317,8 @@ function setupIngest() {
       });
 
       try {
-        const targetWs = document.getElementById('ingest-target-workspace')?.value || state.currentWorkspace;
+        const selectWs = document.getElementById('ingest-target-workspace')?.value;
+        const targetWs = (selectWs && selectWs !== 'all') ? selectWs : (state.currentWorkspace !== 'all' ? state.currentWorkspace : 'default');
         const result = await window.llmwiki.ingest([fileItem.path], { workspace: targetWs });
         if (result && !result.error) {
           fileItem.status = 'success';
@@ -1848,6 +1881,17 @@ function renderWorkspacesTable(workspaces, activeId) {
   tbody.replaceChildren(...workspaces.map(ws => {
     const tr = document.createElement('tr');
     const isActive = ws.id === activeId;
+    tr.style.cursor = 'pointer';
+    tr.classList.toggle('selected-row', isActive);
+
+    // Clicking anywhere on the row switches to this workspace
+    tr.addEventListener('click', async (e) => {
+      // Don't trigger if clicked on a button or delete action
+      if (e.target.closest('button')) return;
+      await switchWorkspace(ws.id);
+      const modal = document.getElementById('modal-workspaces');
+      if (modal) modal.classList.add('hidden');
+    });
 
     const idCell = document.createElement('td');
     const code = document.createElement('code');
@@ -1861,20 +1905,48 @@ function renderWorkspacesTable(workspaces, activeId) {
     const statusCell = document.createElement('td');
     const badge = document.createElement('span');
     badge.className = isActive ? 'badge badge-type' : 'badge badge-tag';
-    badge.textContent = isActive ? '현재 활성' : '대기';
+    badge.textContent = isActive ? '✓ 현재 활성' : '대기';
     statusCell.appendChild(badge);
 
     const actionCell = document.createElement('td');
     actionCell.style.textAlign = 'center';
+    actionCell.style.display = 'flex';
+    actionCell.style.gap = '6px';
+    actionCell.style.justifyContent = 'center';
+    actionCell.style.alignItems = 'center';
+
+    if (!isActive) {
+      const switchBtn = document.createElement('button');
+      switchBtn.className = 'btn btn-quiet';
+      switchBtn.style.padding = '4px 10px';
+      switchBtn.style.fontSize = '11px';
+      switchBtn.textContent = '선택';
+      switchBtn.title = '이 워크스페이스로 전환';
+      switchBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await switchWorkspace(ws.id);
+        const modal = document.getElementById('modal-workspaces');
+        if (modal) modal.classList.add('hidden');
+      });
+      actionCell.appendChild(switchBtn);
+    }
+
     if (ws.id !== 'default') {
       const delBtn = document.createElement('button');
       delBtn.className = 'btn-delete-row';
       delBtn.textContent = '삭제';
       delBtn.title = '워크스페이스 삭제';
-      delBtn.addEventListener('click', () => deleteWorkspace(ws.id));
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteWorkspace(ws.id);
+      });
       actionCell.appendChild(delBtn);
-    } else {
-      actionCell.textContent = '기본값';
+    } else if (isActive) {
+      const span = document.createElement('span');
+      span.style.color = 'var(--muted)';
+      span.style.fontSize = '11px';
+      span.textContent = '기본값';
+      actionCell.appendChild(span);
     }
 
     tr.append(idCell, nameCell, descCell, countCell, statusCell, actionCell);
@@ -1887,14 +1959,18 @@ async function switchWorkspace(wsId) {
   if (wsId !== 'all') {
     await window.llmwiki.switchWorkspace(wsId);
   }
+
+  // Reload workspaces metadata first so select options exist
+  await loadWorkspaces();
+
+  // Explicitly sync both selects
   const select = document.getElementById('workspace-select');
   if (select) select.value = wsId;
   const ingestSelect = document.getElementById('ingest-target-workspace');
   if (ingestSelect && wsId !== 'all') ingestSelect.value = wsId;
 
-  await refreshAll();
-  await loadWorkspaces();
   updateTopBarWorkspace(state.currentWorkspace);
+  await refreshAll();
 }
 
 async function createNewWorkspace() {
@@ -1947,8 +2023,9 @@ async function createNewWorkspace() {
     nameInput.value = '';
     descInput.value = '';
 
-    await loadWorkspaces();
     await switchWorkspace(createdId);
+    const modal = document.getElementById('modal-workspaces');
+    if (modal) modal.classList.add('hidden');
   } catch (err) {
     alert(`워크스페이스 생성 중 오류가 발생했습니다: ${err.message || err}`);
   } finally {

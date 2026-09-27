@@ -38,8 +38,10 @@ class Store:
         Write concept to Layer 2 (markdown + SQLite FTS5)
         and Layer 3 (Vector semantic index).
         """
-        if not concept.workspace:
-            concept.workspace = self.workspace or "default"
+        if self.workspace and (not concept.workspace or concept.workspace == "default"):
+            concept.workspace = self.workspace
+        elif not concept.workspace:
+            concept.workspace = "default"
 
         path = self._file_path(concept.id)
         md_content = concept.to_markdown()
@@ -76,8 +78,10 @@ class Store:
            -> NEW: Save as independent concept.
         Returns (final_concept, action_taken) where action_taken is 'merged', 'linked', or 'created'.
         """
-        if not concept.workspace:
-            concept.workspace = self.workspace or "default"
+        if self.workspace and (not concept.workspace or concept.workspace == "default"):
+            concept.workspace = self.workspace
+        elif not concept.workspace:
+            concept.workspace = "default"
 
         # Exact ID match -> merge into existing
         existing = self.get_concept(concept.id)

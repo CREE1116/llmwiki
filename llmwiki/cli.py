@@ -11,10 +11,6 @@ from .storage.store import Store
 from .storage.graph import KnowledgeGraph
 from .storage.models import Relation
 from .config import get_active_workspace, set_active_workspace
-from .parser import parse_source
-from .parser.web_parser import WebParser
-from .synthesizer.distiller import Distiller
-from .mcp.server import MCPServer
 
 def cmd_ingest(args):
     import signal
@@ -28,6 +24,10 @@ def cmd_ingest(args):
         signal.signal(signal.SIGINT, sigint_handler)
     except Exception:
         pass
+
+    from .parser import parse_source
+    from .parser.web_parser import WebParser
+    from .synthesizer.distiller import Distiller
 
     sources = args.sources
     target_ws = getattr(args, "workspace", None)
@@ -811,6 +811,7 @@ def cmd_reindex(args):
         print(f"[+] Re-indexed {count} concept(s).")
 
 def cmd_re_distill(args):
+    from .synthesizer.distiller import Distiller
     store = Store()
     distiller = Distiller(store=store)
     docs = store.raw.list_all(limit=args.limit)
@@ -846,6 +847,7 @@ def cmd_re_distill(args):
     print(f"[+] Re-distillation complete: {processed} documents processed, {total_concepts} atomic concepts linked.")
 
 def cmd_serve_mcp(args):
+    from .mcp.server import MCPServer
     server = MCPServer()
     server.run_stdio()
 

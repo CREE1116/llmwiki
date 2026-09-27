@@ -195,6 +195,7 @@ class Distiller:
                 tradeoffs={"pros": [], "cons": []},
                 formulas_or_code=[],
                 sources=[f"raw:{raw_doc_id}", source],
+                workspace=self.store.workspace or "default",
                 created_at=today,
                 updated_at=today
             )
@@ -213,6 +214,7 @@ class Distiller:
             tradeoffs={"pros": [], "cons": []},
             formulas_or_code=[],
             sources=[f"raw:{raw_doc_id}", source],
+            workspace=self.store.workspace or "default",
             created_at=today,
             updated_at=today
         )
@@ -234,7 +236,8 @@ class Distiller:
         3. Syncs embeddings to Layer 3.
         """
         # Step 1: Save full raw document (Layer 1)
-        raw_doc_id = self.store.raw.save(title=doc_title, source_uri=source, content=text)
+        target_ws = self.store.workspace or "default"
+        raw_doc_id = self.store.raw.save(title=doc_title, source_uri=source, content=text, workspace=target_ws)
 
         # Truncate text if excessively long for local context (keep first ~8500 chars)
         truncated_text = text[:8500]
@@ -332,6 +335,7 @@ Extract the atomic concept(s) as JSON according to system instructions."""
                 tradeoffs=item.get("tradeoffs", {"pros": [], "cons": []}),
                 formulas_or_code=item.get("formulas_or_code", []),
                 sources=[f"raw:{raw_doc_id}", source],
+                workspace=self.store.workspace or "default",
                 created_at=today,
                 updated_at=today
             )
