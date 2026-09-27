@@ -116,7 +116,7 @@ class VectorIndex:
         """
         cleaned = text.strip()[:3000]
         try:
-            with httpx.Client(timeout=4.0) as client:
+            with httpx.Client(timeout=1.0) as client:
                 res = client.post(
                     f"{self.host}/api/embeddings",
                     json={"model": self.embed_model, "prompt": cleaned}

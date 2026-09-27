@@ -24,6 +24,12 @@ contextBridge.exposeInMainWorld('llmwiki', {
   switchWorkspace: (id) => ipcRenderer.invoke('llmwiki:switch-workspace', id),
   deleteWorkspace: (id) => ipcRenderer.invoke('llmwiki:delete-workspace', id),
   currentWorkspace: () => ipcRenderer.invoke('llmwiki:current-workspace'),
-  routeWorkspace: (query) => ipcRenderer.invoke('llmwiki:route-workspace', query)
+  routeWorkspace: (query) => ipcRenderer.invoke('llmwiki:route-workspace', query),
+  abortIngest: () => ipcRenderer.invoke('llmwiki:abort-ingest'),
+  onIngestEvent: (callback) => {
+    const handler = (event, data) => callback(data);
+    ipcRenderer.on('llmwiki:ingest-event', handler);
+    return () => ipcRenderer.removeListener('llmwiki:ingest-event', handler);
+  }
 });
 

@@ -1,9 +1,10 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 let mainWindow;
+let activeIngestProcess = null;
 const ROOT_DIR = path.resolve(__dirname, '..');
 
 function getPackagedCLIPath() {
@@ -46,6 +47,78 @@ function runCLI(args) {
       } else {
         resolve({ stdout: stdout.trim() });
       }
+    });
+  });
+}
+
+function runCLIStreaming(args, onEvent) {
+  return new Promise((resolve) => {
+    const invocation = getCLIInvocation(args);
+    const options = {
+      cwd: app.isPackaged ? app.getPath('userData') : ROOT_DIR,
+      env: {
+        ...process.env,
+        ...(app.isPackaged ? {} : { PYTHONPATH: ROOT_DIR })
+      }
+    };
+
+    const proc = spawn(invocation.command, invocation.args, options);
+    activeIngestProcess = proc;
+
+    let stdoutBuffer = '';
+    let lastResult = null;
+    let stderrBuffer = '';
+
+    proc.stdout.on('data', (chunk) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop(); // keep last partial line
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parsed = parseJsonSafe(trimmed);
+        if (parsed && parsed.event) {
+          if (onEvent) onEvent(parsed);
+          if (parsed.event === 'completed') {
+            lastResult = parsed;
+          }
+        }
+      }
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk.toString();
+    });
+
+    proc.on('close', (code) => {
+      if (activeIngestProcess === proc) {
+        activeIngestProcess = null;
+      }
+      if (stdoutBuffer.trim()) {
+        const parsed = parseJsonSafe(stdoutBuffer.trim());
+        if (parsed && parsed.event) {
+          if (onEvent) onEvent(parsed);
+          if (parsed.event === 'completed') lastResult = parsed;
+        }
+      }
+      if (lastResult) {
+        resolve(lastResult);
+      } else {
+        const fallbackParsed = parseJsonSafe(stdoutBuffer);
+        if (fallbackParsed) {
+          resolve(fallbackParsed);
+        } else {
+          resolve({ error: stderrBuffer || `Process exited with code ${code}`, stdout: stdoutBuffer });
+        }
+      }
+    });
+
+    proc.on('error', (err) => {
+      if (activeIngestProcess === proc) {
+        activeIngestProcess = null;
+      }
+      resolve({ error: err.message });
     });
   });
 }
@@ -249,6 +322,24 @@ ipcMain.handle('llmwiki:route-workspace', async (event, query) => {
   return parseJsonSafe(res.stdout) || null;
 });
 
+ipcMain.handle('llmwiki:abort-ingest', async () => {
+  if (activeIngestProcess) {
+    try {
+      activeIngestProcess.kill('SIGINT');
+      setTimeout(() => {
+        if (activeIngestProcess) {
+          try { activeIngestProcess.kill('SIGTERM'); } catch (e) {}
+          activeIngestProcess = null;
+        }
+      }, 1500);
+      return { aborted: true };
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+  return { aborted: false };
+});
+
 ipcMain.handle('llmwiki:ingest', async (event, request) => {
   const legacyRequest = Array.isArray(request) || typeof request === 'string';
   const sources = legacyRequest ? request : request?.sources;
@@ -266,11 +357,14 @@ ipcMain.handle('llmwiki:ingest', async (event, request) => {
       args.push('--greedy');
     }
   }
-  args.push('--json');
-  const res = await runCLI(args);
-  const parsed = parseJsonSafe(res.stdout);
-  if (parsed) return parsed;
-  return { error: res.error || res.stdout || 'Ingestion failed' };
+  args.push('--stream');
+  const res = await runCLIStreaming(args, (streamEvent) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('llmwiki:ingest-event', streamEvent);
+    }
+  });
+  if (res && !res.error) return res;
+  return { error: res?.error || 'Ingestion failed' };
 });
 
 ipcMain.handle('llmwiki:deep-dive', async (event, request) => {
@@ -283,12 +377,15 @@ ipcMain.handle('llmwiki:deep-dive', async (event, request) => {
   if (options.maxPages) args.push('--max-pages', String(Math.max(1, Math.min(2000, Number(options.maxPages)))));
   if (options.greedy) args.push('--greedy');
   if (options.query) args.push('--query', String(options.query));
-  args.push('--json');
+  args.push('--stream');
 
-  const res = await runCLI(args);
-  const parsed = parseJsonSafe(res.stdout);
-  if (parsed) return parsed;
-  return { error: res.error || res.stdout || 'Deep dive failed' };
+  const res = await runCLIStreaming(args, (streamEvent) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('llmwiki:ingest-event', streamEvent);
+    }
+  });
+  if (res && !res.error) return res;
+  return { error: res?.error || 'Deep dive failed' };
 });
 
 

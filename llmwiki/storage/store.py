@@ -307,7 +307,8 @@ class Store:
         depth: int = 1,
         max_pages: int = 5,
         greedy: bool = False,
-        extra_query: Optional[str] = None
+        extra_query: Optional[str] = None,
+        on_progress: Optional[Any] = None
     ) -> Dict[str, Any]:
         """Deep dive into a concept by crawling relevant web pages and synthesizing concepts/relations."""
         from ..synthesizer.deep_diver import DeepDiver
@@ -318,7 +319,8 @@ class Store:
             max_pages=max_pages,
             greedy=greedy,
             extra_query=extra_query,
-            workspace=self.workspace
+            workspace=self.workspace,
+            on_progress=on_progress
         )
 
 

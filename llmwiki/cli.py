@@ -17,10 +17,23 @@ from .synthesizer.distiller import Distiller
 from .mcp.server import MCPServer
 
 def cmd_ingest(args):
+    import signal
+    interrupted = False
+
+    def sigint_handler(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+
+    try:
+        signal.signal(signal.SIGINT, sigint_handler)
+    except Exception:
+        pass
+
     sources = args.sources
     target_ws = getattr(args, "workspace", None)
     store = Store(workspace=target_ws)
     distiller = Distiller(store=store)
+    is_stream = getattr(args, "stream", False)
 
     total = len(sources)
     all_results = []
@@ -28,9 +41,11 @@ def cmd_ingest(args):
     page_links = {}
 
     for i, source in enumerate(sources, 1):
+        if interrupted:
+            break
         try:
             if source == "-":
-                parsed_items = [{
+                page_generator = [{
                     "title": "Piped Text",
                     "text": sys.stdin.read(),
                     "source": "stdin",
@@ -40,29 +55,38 @@ def cmd_ingest(args):
                 getattr(args, "explore", False)
                 and (source.startswith("http://") or source.startswith("https://"))
             ):
-                parsed_items = WebParser.crawl(
+                page_generator = WebParser.crawl_stream(
                     source,
                     depth=getattr(args, "depth", 1),
                     max_pages=getattr(args, "max_pages", 8),
                     greedy=getattr(args, "greedy", False),
                     same_site=True,
                 )
-
-                if not getattr(args, "json", False):
-                    print(f"[*] [{i}/{total}] Found {len(parsed_items)} relevant page(s) from '{source}'")
             else:
-                parsed_items = [parse_source(source)]
+                page_generator = [parse_source(source)]
         except Exception as e:
-            if getattr(args, "json", False):
+            if is_stream:
+                print(json.dumps({"event": "error", "message": f"Failed to parse '{source}': {e}"}, ensure_ascii=False), flush=True)
+            elif getattr(args, "json", False):
                 print(f"Failed to parse '{source}': {e}", file=sys.stderr)
             else:
                 print(f"[-] [{i}/{total}] Failed to parse '{source}': {e}")
             continue
 
-        for page_index, parsed in enumerate(parsed_items, 1):
-            if not getattr(args, "json", False):
-                suffix = f" [{page_index}/{len(parsed_items)}]" if len(parsed_items) > 1 else ""
-                print(f"[*] [{i}/{total}]{suffix} Distilling '{parsed['title']}'...")
+        for page_index, parsed in enumerate(page_generator, 1):
+            if interrupted:
+                break
+
+            if is_stream:
+                print(json.dumps({
+                    "event": "page_crawled",
+                    "title": parsed["title"],
+                    "source": parsed["source"],
+                    "depth": parsed.get("crawl_depth", 0),
+                    "page_index": page_index
+                }, ensure_ascii=False), flush=True)
+            elif not getattr(args, "json", False):
+                print(f"[*] [{i}/{total}][p.{page_index}] Distilling '{parsed['title']}'...")
 
             try:
                 concepts = distiller.distill(
@@ -93,11 +117,29 @@ def cmd_ingest(args):
                     page_primary[parsed["source"]] = concepts[0].id
                     page_links[parsed["source"]] = parsed.get("links", [])
 
-                if not getattr(args, "json", False):
+                for c in concepts:
+                    if is_stream:
+                        print(json.dumps({
+                            "event": "concept_created",
+                            "concept": {
+                                "id": c.id,
+                                "name": c.name,
+                                "type": c.type,
+                                "summary": c.summary,
+                                "tags": c.tags
+                            },
+                            "doc_title": parsed["title"],
+                            "doc_source": parsed["source"],
+                            "workspace": c.workspace or target_ws or "default"
+                        }, ensure_ascii=False), flush=True)
+
+                if not is_stream and not getattr(args, "json", False):
                     c_names = [f"`{c.id}`" for c in concepts]
                     print(f"    [+] Created {len(concepts)} concept(s): {', '.join(c_names)}")
             except Exception as e:
-                if getattr(args, "json", False):
+                if is_stream:
+                    print(json.dumps({"event": "error", "message": f"Distillation failed for '{parsed['title']}': {e}"}, ensure_ascii=False), flush=True)
+                elif getattr(args, "json", False):
                     print(f"Distillation failed for '{parsed['title']}': {e}", file=sys.stderr)
                 else:
                     print(f"[-] Distillation failed for '{parsed['title']}': {e}")
@@ -123,8 +165,6 @@ def cmd_ingest(args):
         if not concept:
             continue
 
-        # Preserve outgoing DB-only links created during semantic dedup/linking
-        # before save_concept rebuilds this concept's relation rows.
         for row in store.db.get_relations_for(source_id):
             if row.get("direction") != "outgoing":
                 continue
@@ -155,7 +195,15 @@ def cmd_ingest(args):
                 ))
         store.save_concept(concept)
 
-    if getattr(args, "json", False):
+    if is_stream:
+        print(json.dumps({
+            "event": "completed",
+            "interrupted": interrupted,
+            "total_pages": len(all_results),
+            "total_concepts": sum(len(r["concepts"]) for r in all_results),
+            "results": all_results
+        }, ensure_ascii=False), flush=True)
+    elif getattr(args, "json", False):
         output = all_results if len(all_results) > 1 else (all_results[0] if all_results else {})
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
@@ -212,7 +260,26 @@ def cmd_deep_dive(args):
     caller = getattr(args, "caller", "cli")
     cid = args.concept_id
 
-    if not getattr(args, "json", False):
+    import signal
+    interrupted = False
+
+    def sigint_handler(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+
+    try:
+        signal.signal(signal.SIGINT, sigint_handler)
+    except Exception:
+        pass
+
+    is_stream = getattr(args, "stream", False)
+
+    def progress_callback(event_type: str, data: dict):
+        if is_stream:
+            payload = {"event": event_type, **data}
+            print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+    if not is_stream and not getattr(args, "json", False):
         greedy_str = " (Greedy Unbounded Mode)" if getattr(args, "greedy", False) else ""
         print(f"[*] Starting autonomous web deep-dive for concept `{cid}`{greedy_str}...")
 
@@ -221,7 +288,8 @@ def cmd_deep_dive(args):
         depth=getattr(args, "depth", 1),
         max_pages=getattr(args, "max_pages", 5),
         greedy=getattr(args, "greedy", False),
-        extra_query=getattr(args, "query", None)
+        extra_query=getattr(args, "query", None),
+        on_progress=progress_callback
     )
 
     store.db.log_query(
@@ -232,6 +300,14 @@ def cmd_deep_dive(args):
         result_count=len(res.get("new_concepts", [])),
         workspace=res.get("workspace", "default")
     )
+
+    if is_stream:
+        print(json.dumps({
+            "event": "completed",
+            "interrupted": interrupted,
+            "result": res
+        }, ensure_ascii=False), flush=True)
+        return
 
     if getattr(args, "json", False):
         print(json.dumps(res, ensure_ascii=False, indent=2))
@@ -785,6 +861,7 @@ def main():
     p_ingest.add_argument("--max-pages", type=int, default=8, help="Maximum web pages per starting URL (default: 8, 0 for unlimited)")
     p_ingest.add_argument("--greedy", action="store_true", help="Greedy unbounded exploration of all connected links")
     p_ingest.add_argument("--workspace", "-w", default=None, help="Target workspace for ingested concepts (defaults to active workspace)")
+    p_ingest.add_argument("--stream", action="store_true", help="Output live NDJSON stream events during ingestion")
     p_ingest.add_argument("--json", action="store_true", help="Output JSON format")
 
     # Deep dive
@@ -796,6 +873,7 @@ def main():
     p_deep_dive.add_argument("--query", "-q", default=None, help="Supplemental search keywords")
     p_deep_dive.add_argument("--workspace", "-w", default=None, help="Target workspace")
     p_deep_dive.add_argument("--caller", default="cli", help="Caller identity for logging")
+    p_deep_dive.add_argument("--stream", action="store_true", help="Output live NDJSON stream events during deep dive")
     p_deep_dive.add_argument("--json", action="store_true", help="Output JSON format")
 
 

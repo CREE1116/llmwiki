@@ -140,16 +140,24 @@ function setupGraph() {
         state: 'running'
       });
 
+      const abortBtn = document.getElementById('btn-abort-ingest');
+      if (abortBtn) {
+        abortBtn.classList.remove('hidden');
+        abortBtn.disabled = false;
+        abortBtn.textContent = '딥다이브 중단 (Stop)';
+      }
+
       beginLiveGraphRefresh();
       try {
         const res = await window.llmwiki.deepDive(node.id, { depth: 1, maxPages: 5, greedy: false });
         if (res && !res.error) {
           const count = res.new_concepts?.length || 0;
           const relCount = res.new_relations || 0;
+          const interruptedNotice = res.interrupted ? ' (중단 시점까지 보존됨)' : '';
           setProgress({
-            title: '딥다이브 완료',
+            title: res.interrupted ? '딥다이브 중단 완료' : '딥다이브 완료',
             percent: 100,
-            detail: `${count}개 신규 개념과 ${relCount}개 연결 관계를 지식 그래프에 자동 추가했습니다.`,
+            detail: `${count}개 신규 개념과 ${relCount}개 연결 관계를 지식 그래프에 자동 추가했습니다.${interruptedNotice}`,
             count: '완료',
             state: 'success'
           });
@@ -174,6 +182,10 @@ function setupGraph() {
         });
       } finally {
         await endLiveGraphRefresh();
+        if (abortBtn) {
+          abortBtn.classList.add('hidden');
+          abortBtn.textContent = '탐색 중단 (Stop)';
+        }
         deepDiveBtn.disabled = false;
         deepDiveBtn.textContent = originalText;
       }
@@ -1083,6 +1095,56 @@ async function loadLogs() {
 function setupIngest() {
   const dropZone = document.getElementById('file-drop-zone');
   const input = document.getElementById('ingest-url-input');
+  const abortBtn = document.getElementById('btn-abort-ingest');
+
+  if (abortBtn) {
+    abortBtn.addEventListener('click', async () => {
+      abortBtn.disabled = true;
+      abortBtn.textContent = '중단 요청 중…';
+      try {
+        await window.llmwiki.abortIngest();
+        setProgress({
+          title: '탐색 중단됨',
+          percent: 100,
+          detail: '사용자 요청으로 탐색이 중단되었습니다. 현재까지 추출된 지식은 그래프에 안전하게 보존되었습니다.',
+          state: 'error'
+        });
+      } catch (err) {
+        console.error('Abort failed:', err);
+      } finally {
+        abortBtn.classList.add('hidden');
+        abortBtn.disabled = false;
+        abortBtn.textContent = '탐색 중단 (Stop)';
+        await refreshAll();
+      }
+    });
+  }
+
+  // Live real-time ingestion stream listener
+  if (window.llmwiki?.onIngestEvent) {
+    window.llmwiki.onIngestEvent(async (evt) => {
+      if (evt.event === 'page_crawled') {
+        setProgress({
+          title: '웹 문서 크롤링 중…',
+          detail: `[p.${evt.page_index || '•'}] ${evt.title || evt.source}`,
+          count: '문서 수집',
+          indeterminate: true,
+          state: 'running'
+        });
+      } else if (evt.event === 'concept_created') {
+        setProgress({
+          title: '새 개념 증류 및 그래프 연결…',
+          detail: `✨ [[${evt.concept.name}]] (${evt.concept.type}) 추가됨`,
+          count: '개념 증류',
+          indeterminate: true,
+          state: 'running'
+        });
+        // 즉각적인 그래프 및 통계 라이브 갱신
+        loadGraph(state.currentWorkspace);
+        loadStats(state.currentWorkspace);
+      }
+    });
+  }
 
   const greedyToggle = document.getElementById('ingest-explore-greedy');
   if (greedyToggle) {
@@ -1117,6 +1179,11 @@ function setupIngest() {
     const depth = Number(document.getElementById('ingest-explore-depth').value || 1);
     const maxPages = greedy ? 0 : Number(document.getElementById('ingest-explore-pages').value || 8);
     button.disabled = true;
+    if (abortBtn) {
+      abortBtn.classList.remove('hidden');
+      abortBtn.disabled = false;
+      abortBtn.textContent = '탐색 중단 (Stop)';
+    }
     setProgress({
       title: explore ? (greedy ? '🚀 그리디 무한 탐색 중…' : '연결 문서 탐색 중…') : '웹페이지 분석 중…',
       percent: 30,
@@ -1131,15 +1198,16 @@ function setupIngest() {
       const targetWs = document.getElementById('ingest-target-workspace')?.value || state.currentWorkspace;
       const result = await window.llmwiki.ingest([url], { explore, depth, maxPages, greedy, workspace: targetWs });
       if (result && !result.error) {
-        const documents = Array.isArray(result) ? result.length : 1;
-        const concepts = Array.isArray(result)
+        const documents = result.total_pages || (Array.isArray(result) ? result.length : (result.results ? result.results.length : 1));
+        const concepts = result.total_concepts !== undefined ? result.total_concepts : (Array.isArray(result)
           ? result.reduce((acc, r) => acc + (r.concepts?.length || 0), 0)
-          : (result.concepts?.length || 0);
+          : (result.concepts?.length || 0));
+        const interruptedNotice = result.interrupted ? ' (중단 시점까지 보존됨)' : '';
         setProgress({
-          title: '가져오기 완료',
+          title: result.interrupted ? '탐색 중단 완료' : '가져오기 완료',
           percent: 100,
-          detail: `${documents}개 문서에서 ${concepts}개 개념을 정리해 지식 베이스에 추가했습니다.`,
-          count: '100%',
+          detail: `${documents}개 문서에서 ${concepts}개 개념을 정리해 지식 베이스에 추가했습니다.${interruptedNotice}`,
+          count: '완료',
           state: 'success'
         });
 
@@ -1162,6 +1230,7 @@ function setupIngest() {
       });
     } finally {
       await endLiveGraphRefresh();
+      if (abortBtn) abortBtn.classList.add('hidden');
       button.disabled = false;
     }
   });
@@ -1832,28 +1901,62 @@ async function createNewWorkspace() {
   const idInput = document.getElementById('input-new-ws-id');
   const nameInput = document.getElementById('input-new-ws-name');
   const descInput = document.getElementById('input-new-ws-desc');
-  const id = idInput.value.trim().toLowerCase();
+  const createBtn = document.getElementById('btn-create-workspace');
+
+  let rawId = idInput.value.trim();
   const name = nameInput.value.trim();
   const desc = descInput.value.trim();
 
-  if (!id) {
-    alert('워크스페이스 ID를 입력해주세요.');
-    return;
-  }
-  if (!/^[a-z0-9_-]+$/.test(id)) {
-    alert('워크스페이스 ID는 영문 소문자, 숫자, 언더스코어(_), 하이픈(-)만 사용할 수 있습니다.');
+  if (!rawId && !name) {
+    alert('워크스페이스 이름 또는 ID를 입력해주세요.');
+    if (nameInput) nameInput.focus();
     return;
   }
 
-  const res = await window.llmwiki.createWorkspace({ id, name: name || id, desc });
-  if (res?.error) {
-    alert(`생성 실패: ${res.error}`);
-    return;
+  // Auto-generate clean slug ID from name if ID is omitted
+  if (!rawId) {
+    rawId = name;
   }
-  idInput.value = '';
-  nameInput.value = '';
-  descInput.value = '';
-  await switchWorkspace(id);
+
+  // Sanitize: allow unicode letters/digits, convert whitespace and specials to underscore
+  let finalId = rawId.toLowerCase()
+    .replace(/[^\w가-힣0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (!finalId) {
+    finalId = 'ws_' + Date.now().toString(36);
+  }
+
+  const displayName = name || rawId || finalId;
+
+  if (createBtn) {
+    createBtn.disabled = true;
+    createBtn.textContent = '생성 중…';
+  }
+
+  try {
+    const res = await window.llmwiki.createWorkspace({ id: finalId, name: displayName, desc });
+    if (res?.error) {
+      alert(`생성 실패: ${res.error}`);
+      return;
+    }
+
+    const createdId = res.id || finalId;
+    idInput.value = '';
+    nameInput.value = '';
+    descInput.value = '';
+
+    await loadWorkspaces();
+    await switchWorkspace(createdId);
+  } catch (err) {
+    alert(`워크스페이스 생성 중 오류가 발생했습니다: ${err.message || err}`);
+  } finally {
+    if (createBtn) {
+      createBtn.disabled = false;
+      createBtn.textContent = '워크스페이스 생성';
+    }
+  }
 }
 
 async function deleteWorkspace(id) {

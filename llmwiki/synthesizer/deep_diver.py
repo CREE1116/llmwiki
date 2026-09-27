@@ -26,7 +26,8 @@ class DeepDiver:
         max_pages: int = 5,
         greedy: bool = False,
         extra_query: Optional[str] = None,
-        workspace: Optional[str] = None
+        workspace: Optional[str] = None,
+        on_progress: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Deep-dive into a concept by crawling relevant web knowledge and synthesizing
@@ -57,32 +58,92 @@ class DeepDiver:
         crawled_docs = []
         visited_urls = set()
 
-        # 2. Crawl candidate sites
+        # 2. Stream crawl candidate sites and distill in real time
+        new_concepts: List[Concept] = []
+        new_relation_count = 0
+        crawled_count = 0
+        interrupted = False
+
         for seed_url in candidate_urls:
-            if len(crawled_docs) >= (10000 if greedy else max(1, max_pages)):
+            if interrupted or (not greedy and crawled_count >= max_pages):
                 break
             if seed_url in visited_urls:
                 continue
 
             try:
-                pages = WebParser.crawl(
+                for doc in WebParser.crawl_stream(
                     seed_url,
                     depth=depth,
                     max_pages=max_pages if not greedy else 0,
                     greedy=greedy,
                     same_site=True,
                     timeout=15.0
-                )
-                for p in pages:
-                    if p["source"] not in visited_urls:
-                        visited_urls.add(p["source"])
-                        crawled_docs.append(p)
-                        if not greedy and len(crawled_docs) >= max_pages:
-                            break
+                ):
+                    if doc["source"] in visited_urls:
+                        continue
+                    visited_urls.add(doc["source"])
+                    crawled_count += 1
+
+                    if on_progress:
+                        try:
+                            on_progress("page_crawled", {"title": doc["title"], "source": doc["source"], "count": crawled_count})
+                        except Exception:
+                            pass
+
+                    # Immediate distillation
+                    try:
+                        distilled = self.distiller.distill(
+                            doc_title=doc["title"],
+                            text=doc["text"],
+                            source=doc["source"]
+                        )
+                        for c in distilled:
+                            c.workspace = target_ws
+                            if c.id != origin.id:
+                                c.relations.append(Relation(
+                                    target=origin.id,
+                                    type="related_to",
+                                    reason=f"Deep-dive web extraction from '{doc['title'][:40]}'"
+                                ))
+                                saved_c, action = self.store.save_concept_with_dedup(c)
+                                new_concepts.append(saved_c)
+
+                                self.store.db.add_relation(
+                                    source_id=origin.id,
+                                    relation_type="expands",
+                                    target_id=saved_c.id,
+                                    reason="Autonomous deep dive expansion"
+                                )
+                                new_relation_count += 1
+
+                                if on_progress:
+                                    try:
+                                        on_progress("concept_created", {
+                                            "concept": {
+                                                "id": saved_c.id,
+                                                "name": saved_c.name,
+                                                "type": saved_c.type,
+                                                "summary": saved_c.summary,
+                                                "tags": saved_c.tags
+                                            },
+                                            "doc_title": doc["title"],
+                                            "doc_source": doc["source"],
+                                            "workspace": target_ws
+                                        })
+                                    except Exception:
+                                        pass
+
+                        if doc["source"] not in origin.sources:
+                            origin.sources.append(doc["source"])
+                    except Exception:
+                        pass
+
+                    if not greedy and crawled_count >= max_pages:
+                        break
             except Exception:
                 continue
 
-        if not crawled_docs:
+        if crawled_count == 0:
             return {
                 "concept_id": origin.id,
                 "name": origin.name,
@@ -91,46 +152,6 @@ class DeepDiver:
                 "updated_relations": 0,
                 "message": f"No crawlable web documents could be retrieved for '{origin.name}'."
             }
-
-        new_concepts: List[Concept] = []
-        new_relation_count = 0
-
-        # 3. Distill and link concepts
-        for doc in crawled_docs:
-            try:
-                distilled = self.distiller.distill(
-                    doc_title=doc["title"],
-                    text=doc["text"],
-                    source=doc["source"]
-                )
-                for c in distilled:
-                    c.workspace = target_ws
-                    # Automatically link each distilled concept to origin concept if not origin itself
-                    if c.id != origin.id:
-                        # Add directional link to origin
-                        c.relations.append(Relation(
-                            target=origin.id,
-                            type="related_to",
-                            reason=f"Deep-dive web extraction from '{doc['title'][:40]}'"
-                        ))
-                        saved_c, action = self.store.save_concept_with_dedup(c)
-                        new_concepts.append(saved_c)
-
-                        # Also add reverse edge in graph
-                        self.store.db.add_relation(
-                            source_id=origin.id,
-                            relation_type="expands",
-                            target_id=saved_c.id,
-                            reason="Autonomous deep dive expansion"
-                        )
-                        new_relation_count += 1
-
-                # Add source URI to origin concept sources
-                if doc["source"] not in origin.sources:
-                    origin.sources.append(doc["source"])
-
-            except Exception:
-                continue
 
         # Re-save updated origin concept
         self.store.save_concept(origin)

@@ -321,7 +321,10 @@
             </div>
             <div class="status-footer">
               <span id="ingest-status-detail" class="status-detail">준비 중</span>
-              <span id="ingest-status-count" class="status-count"></span>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span id="ingest-status-count" class="status-count"></span>
+                <button id="btn-abort-ingest" class="btn btn-danger-soft btn-sm hidden" style="padding: 3px 10px; font-size: 11px;">탐색 중단 (Stop)</button>
+              </div>
             </div>
           </div>
         </div>
@@ -453,19 +456,20 @@
           <div class="workspace-form-card">
             <div class="form-row-2">
               <label>
-                <span>워크스페이스 ID (영문/숫자/언더스코어)</span>
-                <input id="input-new-ws-id" class="text-input" type="text" placeholder="예: bio_research, web_arch">
+                <span>워크스페이스 ID (영문/한글/숫자, 미입력 시 자동 생성)</span>
+                <input id="input-new-ws-id" class="text-input" type="text" placeholder="예: bio_research, 양자역학 (비워두면 자동 생성)">
               </label>
               <label>
                 <span>표시 이름</span>
-                <input id="input-new-ws-name" class="text-input" type="text" placeholder="예: 바이오 연구, 웹 아키텍처">
+                <input id="input-new-ws-name" class="text-input" type="text" placeholder="예: 바이오 연구, 양자 컴퓨팅">
               </label>
             </div>
             <label style="margin-top: 10px; display: block;">
-              <span>설명 (시맨틱 라우팅 및 개요에 활용)</span>
+              <span>설명 (시맨틱 자동 라우팅 및 개요에 활용)</span>
               <input id="input-new-ws-desc" class="text-input" type="text" placeholder="예: 분자생물학 논문 및 단백질 도메인 지식">
             </label>
-            <div class="form-actions-right">
+            <div class="form-actions-right" style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px;">
+              <small style="color: var(--muted); font-size: 11px;">💡 이름만 입력해도 고유 ID가 자동으로 부여되어 즉시 생성됩니다.</small>
               <button id="btn-create-workspace" class="btn btn-primary">워크스페이스 생성</button>
             </div>
           </div>

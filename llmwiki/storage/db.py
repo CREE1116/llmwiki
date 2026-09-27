@@ -197,13 +197,18 @@ class Database:
             conn.commit()
 
     def create_workspace(self, ws_id: str, name: str, description: str = "", tags: Optional[List[str]] = None) -> Workspace:
-        clean_id = re.sub(r"[^\w-]", "_", ws_id.strip().lower())
+        import time
+        raw_id = (ws_id or name or "").strip().lower()
+        clean_id = re.sub(r"[^\w-]", "_", raw_id).strip("_")
+        if not clean_id:
+            clean_id = f"ws_{int(time.time())}"
+        display_name = (name or clean_id).strip()
         tags_json = json.dumps(tags or [], ensure_ascii=False)
         with self.get_connection() as conn:
             conn.execute("""
             INSERT OR REPLACE INTO workspaces (id, name, description, tags_json, created_at, updated_at)
             VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-            """, (clean_id, name.strip(), description.strip(), tags_json))
+            """, (clean_id, display_name, description.strip(), tags_json))
             conn.commit()
         ws = self.get_workspace(clean_id)
         if not ws:

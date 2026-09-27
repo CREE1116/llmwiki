@@ -328,7 +328,7 @@ class WebParser:
         return results[:limit]
 
     @classmethod
-    def crawl(
+    def crawl_stream(
         cls,
         start_url: str,
         depth: int = 1,
@@ -336,11 +336,11 @@ class WebParser:
         greedy: bool = False,
         same_site: bool = True,
         timeout: float = 15.0,
-    ) -> List[Dict[str, Any]]:
+    ):
         """
-        Relevance-ordered web crawler with custom depth, max pages, and greedy infinite exploration.
-        - greedy=True: Unbounded exploration following all relevant frontier links up to a safe 10,000-page limit.
-        - max_pages=0: Also triggers greedy/unbounded exploration.
+        Relevance-ordered web crawler generator.
+        Yields parsed web pages as soon as they are retrieved, enabling pipelined distillation
+        and real-time live graph updates.
         """
         if greedy or int(max_pages) <= 0:
             depth = max(1, min(int(depth) if depth else 10, 50))
@@ -355,11 +355,13 @@ class WebParser:
         root_page["crawl_depth"] = 0
         root_page["parent_url"] = None
         root_page["anchor_text"] = ""
-        pages: List[Dict[str, Any]] = [root_page]
-        visited = {root_url}
+        yield root_page
 
-        if depth == 0 or max_pages == 1:
-            return pages
+        visited = {root_url}
+        count = 1
+
+        if depth == 0 or max_pages <= 1:
+            return
 
         remaining = max_pages - 1
         base_quota = remaining // depth
@@ -390,7 +392,7 @@ class WebParser:
 
         for current_depth in range(1, depth + 1):
             quota = level_quotas.get(current_depth, remaining) if not greedy else remaining
-            if quota <= 0 or not frontier or len(pages) >= max_pages:
+            if quota <= 0 or not frontier or count >= max_pages:
                 break
 
             frontier.sort(key=lambda item: item[0], reverse=True)
@@ -398,7 +400,7 @@ class WebParser:
             successful = 0
 
             for _, url, parent_url, anchor_text in frontier:
-                if successful >= quota or len(pages) >= max_pages:
+                if successful >= quota or count >= max_pages:
                     break
                 if url in visited:
                     continue
@@ -412,8 +414,9 @@ class WebParser:
                 page["crawl_depth"] = current_depth
                 page["parent_url"] = parent_url
                 page["anchor_text"] = anchor_text
-                pages.append(page)
+                count += 1
                 successful += 1
+                yield page
 
                 if current_depth >= depth:
                     continue
@@ -427,5 +430,23 @@ class WebParser:
 
             frontier = list(next_by_url.values())
 
-        return pages
+    @classmethod
+    def crawl(
+        cls,
+        start_url: str,
+        depth: int = 1,
+        max_pages: int = 8,
+        greedy: bool = False,
+        same_site: bool = True,
+        timeout: float = 15.0,
+    ) -> List[Dict[str, Any]]:
+        """Collect all crawled pages into a list."""
+        return list(cls.crawl_stream(
+            start_url=start_url,
+            depth=depth,
+            max_pages=max_pages,
+            greedy=greedy,
+            same_site=same_site,
+            timeout=timeout,
+        ))
 
