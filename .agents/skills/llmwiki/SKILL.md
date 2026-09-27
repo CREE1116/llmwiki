@@ -18,16 +18,22 @@ Base project path: `/Users/leejongmin/llmwiki`
 
 | What you want to do | Recommended Command |
 |---|---|
-| Search for a concept, algorithm, or topic | `python3 -m llmwiki search "<query>" --limit 5` |
-| Deep semantic search (fuzzy/conceptual match) | `python3 -m llmwiki search "<query>" --mode semantic` |
+| Search concepts (Hybrid RRF fusion) | `python3 -m llmwiki search "<query>" --limit 5` |
+| Multi-hop associative search (HippoRAG) | `python3 -m llmwiki search "<query>" --mode graph` |
+| Deep semantic search (Vector cosine) | `python3 -m llmwiki search "<query>" --mode semantic` |
 | Exact keyword / FTS5 search | `python3 -m llmwiki search "<query>" --mode keyword` |
-| Read full distilled concept card & relations | `python3 -m llmwiki get <concept_id> --neighbors` |
-| Drill down to Layer 1 ground-truth raw document | `python3 -m llmwiki get <concept_id> --raw` or `python3 -m llmwiki raw <doc_id>` |
-| Traverse knowledge graph connections | `python3 -m llmwiki graph <concept_id> --hops 1` |
+| Read distilled concept card & relations | `python3 -m llmwiki get <concept_id> --neighbors` |
+| Drill down to Layer 1 ground-truth document | `python3 -m llmwiki get <concept_id> --raw` or `python3 -m llmwiki raw <doc_id>` |
+| Traverse 1-hop graph connections | `python3 -m llmwiki graph <concept_id> --hops 1` |
+| Find reasoning path between 2 concepts | `python3 -m llmwiki graph <start_id> --path <target_id>` |
+| Detect thematic clusters (GraphRAG) | `python3 -m llmwiki graph --communities` |
+| Find core hub concepts (PageRank) | `python3 -m llmwiki graph --pagerank` |
+| Find knowledge bridge concepts | `python3 -m llmwiki graph --bridges` |
 | View LLM retrieval audit logs | `python3 -m llmwiki logs --limit 20` |
 | Ingest a new paper (PDF), file, or web URL | `python3 -m llmwiki ingest <file_path_or_url>` |
-| Check warehouse statistics | `python3 -m llmwiki stats` |
+| Check warehouse & graph topology statistics | `python3 -m llmwiki stats` |
 | Launch Desktop App (Graph & Logs UI) | `/Users/leejongmin/llmwiki/bin/llmwiki-app` |
+
 
 > [!TIP]
 > Add `--json` to any command (e.g. `python3 -m llmwiki search "..." --json`) to get structured JSON output suitable for programmatic processing.

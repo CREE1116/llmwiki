@@ -7,19 +7,43 @@ import sqlite3
 import math
 import re
 from typing import List, Dict, Any, Optional, Tuple
+import sqlite3
+import math
+import re
+from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import httpx
 from ..config import OLLAMA_HOST
 from .db import Database
 from .models import Concept, SearchResult
 
+
+def _fnv1a_32(token: str) -> int:
+    """
+    32-bit FNV-1a deterministic hash.
+    Zero external dependencies, 100% stable across processes, Python versions, and operating systems.
+    """
+    h = 2166136261
+    for b in token.encode("utf-8"):
+        h ^= b
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
 class VectorIndex:
     def __init__(self, db: Optional[Database] = None, host: str = OLLAMA_HOST, embed_model: str = "nomic-embed-text"):
         self.db = db or Database()
         self.host = host.rstrip("/")
         self.embed_model = embed_model
-        self.dim = 384 # Default dimension for fallback vectorizer
+        self.dim = 384  # Default dimension for fallback vectorizer
         self._init_table()
+
+        # In-memory vector matrix cache for sub-millisecond retrieval
+        self._cache_valid = False
+        self._cached_ids: List[str] = []
+        self._cached_meta: List[Dict[str, Any]] = []
+        self._cached_matrix: Optional[np.ndarray] = None
+        self._cached_dims: List[int] = []
 
     def _init_table(self):
         with self.db.get_connection() as conn:
@@ -35,26 +59,49 @@ class VectorIndex:
             """)
             conn.commit()
 
+    def invalidate_cache(self):
+        """Invalidate the cached in-memory vector matrix."""
+        self._cache_valid = False
+        self._cached_matrix = None
+        self._cached_ids.clear()
+        self._cached_meta.clear()
+        self._cached_dims.clear()
+
     def _fallback_embed(self, text: str) -> np.ndarray:
         """
         Ultra-fast, deterministic hashing vectorizer in pure NumPy.
-        Guarantees semantic n-gram overlap similarity with 0 external dependencies.
+        Uses FNV-1a hashing for cross-process determinism, with:
+        - Word-level unigrams with position-decay weighting
+        - Word-level bigrams for syntactic phrase capture
+        - Character trigrams for morphological and subword/fuzzy matching
+        Guarantees stable cosine similarity with 0 external dependencies.
         """
-        words = re.findall(r"\w+", text.lower())
+        words = re.findall(r"[\w가-힣]+", text.lower())
         vec = np.zeros(self.dim, dtype=np.float32)
         if not words:
             return vec
 
-        for w in words:
-            # Word level
-            idx1 = hash(w) % self.dim
-            vec[idx1] += 1.0
-            # Character trigram level for subword/fuzzy matching
+        total_words = len(words)
+        for i, w in enumerate(words):
+            # Positional weight: words earlier in text (e.g. title/summary) have higher importance
+            pos_weight = 1.0 + max(0.0, (10 - i) / 10.0) * 0.5
+
+            # 1. Word level unigram
+            idx1 = _fnv1a_32(w) % self.dim
+            vec[idx1] += 1.0 * pos_weight
+
+            # 2. Word level bigram for phrase context
+            if i < total_words - 1:
+                bigram = f"{w}_{words[i+1]}"
+                idx_bi = _fnv1a_32(bigram) % self.dim
+                vec[idx_bi] += 1.2 * pos_weight
+
+            # 3. Subword character trigrams for fuzzy and morphological overlap
             if len(w) >= 3:
-                for i in range(len(w) - 2):
-                    tri = w[i:i+3]
-                    idx2 = hash(tri) % self.dim
-                    vec[idx2] += 0.5
+                for j in range(len(w) - 2):
+                    tri = w[j:j+3]
+                    idx_tri = _fnv1a_32(tri) % self.dim
+                    vec[idx_tri] += 0.4
 
         # L2 normalize
         norm = np.linalg.norm(vec)
@@ -67,7 +114,7 @@ class VectorIndex:
         Generate embedding. Tries Ollama embedding API first,
         gracefully falls back to deterministic local vectorizer.
         """
-        cleaned = text.strip()[:2000]
+        cleaned = text.strip()[:3000]
         try:
             with httpx.Client(timeout=4.0) as client:
                 res = client.post(
@@ -85,8 +132,8 @@ class VectorIndex:
         except Exception:
             pass
 
-        # Fallback to pure local vectorizer
-        return self._fallback_embed(cleaned), "local_hash_v1"
+        # Fallback to deterministic local vectorizer
+        return self._fallback_embed(cleaned), "local_hash_v2"
 
     def index_concept(self, concept: Concept):
         """Build embedding from concept's dense textual components."""
@@ -111,6 +158,54 @@ class VectorIndex:
             """, (concept.id, model_name, len(vec), vec_bytes))
             conn.commit()
 
+        self.invalidate_cache()
+
+    def _ensure_cache(self):
+        """Load and cache all concept vectors in memory as a contiguous NumPy matrix."""
+        if self._cache_valid and self._cached_matrix is not None:
+            return
+
+        import json
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("""
+            SELECT cv.concept_id, cv.vector, cv.dim, c.name, c.type, c.summary, c.tags_json
+            FROM concept_vectors cv
+            JOIN concepts c ON cv.concept_id = c.id
+            """)
+            rows = cursor.fetchall()
+
+        if not rows:
+            self._cached_ids = []
+            self._cached_meta = []
+            self._cached_matrix = np.empty((0, self.dim), dtype=np.float32)
+            self._cached_dims = []
+            self._cache_valid = True
+            return
+
+        ids = []
+        meta = []
+        vecs = []
+        dims = []
+        for r in rows:
+            blob = r["vector"]
+            dim = r["dim"]
+            arr = np.frombuffer(blob, dtype=np.float32)
+            ids.append(r["concept_id"])
+            dims.append(dim)
+            meta.append({
+                "name": r["name"],
+                "type": r["type"],
+                "summary": r["summary"] or "",
+                "tags": json.loads(r["tags_json"]) if r["tags_json"] else []
+            })
+            vecs.append(arr)
+
+        self._cached_ids = ids
+        self._cached_meta = meta
+        self._cached_dims = dims
+        self._cached_matrix = np.stack(vecs) if vecs else np.empty((0, self.dim), dtype=np.float32)
+        self._cache_valid = True
+
     def find_most_similar_concept(
         self,
         target_vec: np.ndarray,
@@ -121,42 +216,29 @@ class VectorIndex:
         Find most similar existing concepts for a given vector.
         Returns list of (concept_id, cosine_similarity_score) sorted descending.
         """
-        with self.db.get_connection() as conn:
-            cursor = conn.execute("SELECT concept_id, vector, dim FROM concept_vectors")
-            rows = cursor.fetchall()
-
-        if not rows:
+        self._ensure_cache()
+        if self._cached_matrix is None or len(self._cached_ids) == 0:
             return []
 
-        if isinstance(exclude_ids, (list, set, tuple)):
-            ex_set = set(exclude_ids)
-        elif exclude_ids:
-            ex_set = {exclude_ids}
-        else:
-            ex_set = set()
+        ex_set = set(exclude_ids or []) if isinstance(exclude_ids, (list, set, tuple)) else ({exclude_ids} if exclude_ids else set())
+        target_dim = len(target_vec)
 
-        ids = []
-        vecs = []
-        for r in rows:
-            cid = r["concept_id"]
-            if cid in ex_set:
-                continue
-            dim = r["dim"]
-            if len(target_vec) != dim:
-                continue
-            ids.append(cid)
-            vecs.append(np.frombuffer(r["vector"], dtype=np.float32))
-
-        if not vecs:
+        # Filter matching dimensions
+        valid_indices = [
+            i for i, (cid, dim) in enumerate(zip(self._cached_ids, self._cached_dims))
+            if cid not in ex_set and dim == target_dim
+        ]
+        if not valid_indices:
             return []
 
-        matrix = np.stack(vecs)
-        scores = np.dot(matrix, target_vec)
-        top_indices = np.argsort(scores)[::-1][:top_k]
+        sub_matrix = self._cached_matrix[valid_indices]
+        scores = np.dot(sub_matrix, target_vec)
+        top_local_idx = np.argsort(scores)[::-1][:top_k]
 
         results = []
-        for idx in top_indices:
-            results.append((ids[idx], float(scores[idx])))
+        for idx in top_local_idx:
+            orig_i = valid_indices[idx]
+            results.append((self._cached_ids[orig_i], float(scores[idx])))
         return results
 
     def search_semantic(self, query: str, top_k: int = 5) -> List[SearchResult]:
@@ -165,110 +247,149 @@ class VectorIndex:
             return []
 
         q_vec, _ = self.embed_text(query)
+        self._ensure_cache()
 
-        # Load all vectors from SQLite
-        with self.db.get_connection() as conn:
-            cursor = conn.execute("""
-            SELECT cv.concept_id, cv.vector, cv.dim, c.name, c.type, c.summary, c.tags_json
-            FROM concept_vectors cv
-            JOIN concepts c ON cv.concept_id = c.id
-            """)
-            rows = cursor.fetchall()
-
-        if not rows:
+        if self._cached_matrix is None or len(self._cached_ids) == 0:
             return []
 
-        ids = []
-        names = []
-        types = []
-        summaries = []
-        tags_list = []
-        vec_list = []
-
-        import json
-        for r in rows:
-            blob = r["vector"]
-            dim = r["dim"]
-            if len(q_vec) != dim:
-                # Dim mismatch, skip or re-embed
-                continue
-            arr = np.frombuffer(blob, dtype=np.float32)
-            ids.append(r["concept_id"])
-            names.append(r["name"])
-            types.append(r["type"])
-            summaries.append(r["summary"] or "")
-            tags_list.append(json.loads(r["tags_json"]) if r["tags_json"] else [])
-            vec_list.append(arr)
-
-        if not vec_list:
+        q_dim = len(q_vec)
+        valid_indices = [
+            i for i, dim in enumerate(self._cached_dims)
+            if dim == q_dim
+        ]
+        if not valid_indices:
             return []
 
-        # Vectorized dot product (cosine similarity since vectors are L2-normalized)
-        matrix = np.stack(vec_list) # shape: (N, dim)
-        scores = np.dot(matrix, q_vec) # shape: (N,)
+        sub_matrix = self._cached_matrix[valid_indices]
+        scores = np.dot(sub_matrix, q_vec)
 
-        top_indices = np.argsort(scores)[::-1][:top_k]
+        top_local_idx = np.argsort(scores)[::-1][:top_k]
 
         results = []
-        for idx in top_indices:
-            score_val = float(scores[idx])
+        for idx in top_local_idx:
+            orig_i = valid_indices[idx]
+            cid = self._cached_ids[orig_i]
+            m = self._cached_meta[orig_i]
             results.append(SearchResult(
-                concept_id=ids[idx],
-                name=names[idx],
-                type=types[idx],
-                summary=summaries[idx],
-                tags=tags_list[idx],
-                score=score_val,
+                concept_id=cid,
+                name=m["name"],
+                type=m["type"],
+                summary=m["summary"],
+                tags=m["tags"],
+                score=round(float(scores[idx]), 4),
                 matched_by="vector"
             ))
         return results
 
-    def hybrid_search(self, query: str, top_k: int = 5, alpha: float = 0.5) -> List[SearchResult]:
+    def hybrid_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        alpha: float = 0.5,
+        method: str = "rrf",
+        rrf_k: int = 60
+    ) -> List[SearchResult]:
         """
-        Hybrid search combining:
+        High-performance Hybrid Search combining:
         - Layer 3 Vector Cosine Similarity (Semantic)
         - SQLite FTS5 BM25 (Exact keywords/aliases)
+
+        Fusion methods:
+        - 'rrf' (default): Reciprocal Rank Fusion, robust against score scale mismatches.
+        - 'linear': Normalized score combination: (1 - alpha) * fts + alpha * vec.
         """
-        fts_hits = self.db.search(query, limit=top_k * 2)
-        vec_hits = self.search_semantic(query, top_k=top_k * 2)
+        candidate_k = max(top_k * 3, 20)
+        fts_hits = self.db.search(query, limit=candidate_k)
+        vec_hits = self.search_semantic(query, top_k=candidate_k)
 
-        # Merge scores
-        combined: Dict[str, Dict[str, Any]] = {}
+        if not fts_hits and not vec_hits:
+            return []
 
-        # Normalize FTS scores (lower BM25 is better in SQLite, we invert it)
-        max_fts = max([h.score for h in fts_hits], default=1.0) or 1.0
+        # Store metadata for all seen concepts
+        meta_pool: Dict[str, SearchResult] = {}
         for h in fts_hits:
-            norm_fts = 1.0 / (1.0 + h.score)
-            combined[h.concept_id] = {
-                "hit": h,
-                "fts_score": norm_fts,
-                "vec_score": 0.0
-            }
-
+            meta_pool[h.concept_id] = h
         for v in vec_hits:
-            if v.concept_id in combined:
-                combined[v.concept_id]["vec_score"] = max(0.0, v.score)
-            else:
-                combined[v.concept_id] = {
-                    "hit": v,
-                    "fts_score": 0.0,
-                    "vec_score": max(0.0, v.score)
+            if v.concept_id not in meta_pool:
+                meta_pool[v.concept_id] = v
+
+        if method == "rrf":
+            # Reciprocal Rank Fusion: 1 / (k + rank)
+            rrf_scores: Dict[str, float] = {}
+
+            # FTS5 ranks (1-indexed)
+            w_fts = (1.0 - alpha) * 2.0  # Normalized weight scale
+            for rank, h in enumerate(fts_hits, 1):
+                rrf_scores[h.concept_id] = rrf_scores.get(h.concept_id, 0.0) + (w_fts / (rrf_k + rank))
+
+            # Vector ranks (1-indexed)
+            w_vec = alpha * 2.0
+            for rank, v in enumerate(vec_hits, 1):
+                rrf_scores[v.concept_id] = rrf_scores.get(v.concept_id, 0.0) + (w_vec / (rrf_k + rank))
+
+            sorted_ids = sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)
+            results = []
+            for cid in sorted_ids[:top_k]:
+                base = meta_pool[cid]
+                results.append(SearchResult(
+                    concept_id=cid,
+                    name=base.name,
+                    type=base.type,
+                    summary=base.summary,
+                    tags=base.tags,
+                    score=round(rrf_scores[cid] * 100.0, 4),  # Scale for readable presentation
+                    matched_by="hybrid_rrf"
+                ))
+            return results
+
+        else:
+            # Linear combination with normalized scores
+            combined: Dict[str, Dict[str, Any]] = {}
+
+            # FTS5 score is already positive (higher is better) from db.search
+            fts_scores = [h.score for h in fts_hits]
+            max_fts = max(fts_scores, default=1.0)
+            min_fts = min(fts_scores, default=0.0)
+            fts_range = max_fts - min_fts if max_fts > min_fts else 1.0
+
+            for h in fts_hits:
+                norm_fts = (h.score - min_fts) / fts_range if fts_range > 0 else 1.0
+                combined[h.concept_id] = {
+                    "hit": h,
+                    "fts_score": norm_fts,
+                    "vec_score": 0.0
                 }
 
-        # Calculate final hybrid score
-        final_list = []
-        for cid, item in combined.items():
-            h = item["hit"]
-            score = (1 - alpha) * item["fts_score"] + alpha * item["vec_score"]
-            final_list.append(SearchResult(
-                concept_id=cid,
-                name=h.name,
-                type=h.type,
-                summary=h.summary,
-                tags=h.tags,
-                score=round(score, 4),
-                matched_by="hybrid"
-            ))
+            vec_scores = [v.score for v in vec_hits]
+            max_vec = max(vec_scores, default=1.0)
+            min_vec = min(vec_scores, default=0.0)
+            vec_range = max_vec - min_vec if max_vec > min_vec else 1.0
 
-        final_list.sort(key=lambda x: x.score, reverse=True)
-        return final_list[:top_k]
+            for v in vec_hits:
+                norm_vec = (v.score - min_vec) / vec_range if vec_range > 0 else 1.0
+                if v.concept_id in combined:
+                    combined[v.concept_id]["vec_score"] = norm_vec
+                else:
+                    combined[v.concept_id] = {
+                        "hit": v,
+                        "fts_score": 0.0,
+                        "vec_score": norm_vec
+                    }
+
+            final_list = []
+            for cid, item in combined.items():
+                h = item["hit"]
+                score = (1.0 - alpha) * item["fts_score"] + alpha * item["vec_score"]
+                final_list.append(SearchResult(
+                    concept_id=cid,
+                    name=h.name,
+                    type=h.type,
+                    summary=h.summary,
+                    tags=h.tags,
+                    score=round(score, 4),
+                    matched_by="hybrid_linear"
+                ))
+
+            final_list.sort(key=lambda x: x.score, reverse=True)
+            return final_list[:top_k]
+

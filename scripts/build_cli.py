@@ -35,9 +35,11 @@ def main() -> int:
             + "). Run: python3 -m pip install -e '.[pdf,build]'"
         )
 
+    CACHE_DIR = ROOT / "build" / "pyinstaller_cache"
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     separator = ";" if os.name == "nt" else ":"
     skill_file = ROOT / ".agents" / "skills" / "llmwiki" / "SKILL.md"
@@ -45,7 +47,6 @@ def main() -> int:
         sys.executable,
         "-m", "PyInstaller",
         "--noconfirm",
-        "--clean",
         "--onefile",
         "--name", "llmwiki",
         "--paths", str(ROOT),
@@ -59,7 +60,10 @@ def main() -> int:
         command.extend(["--add-data", f"{skill_file}{separator}llmwiki_skill"])
     command.append(str(ROOT / "scripts" / "llmwiki_entry.py"))
 
-    subprocess.run(command, cwd=ROOT, check=True)
+    env = os.environ.copy()
+    env["PYINSTALLER_CONFIG_DIR"] = str(CACHE_DIR)
+    subprocess.run(command, cwd=ROOT, check=True, env=env)
+
 
     built_name = "llmwiki.exe" if os.name == "nt" else "llmwiki"
     built = DIST_DIR / built_name

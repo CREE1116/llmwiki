@@ -108,9 +108,11 @@ def check_environment() -> Dict[str, Any]:
 
     codex = _mcp_status("codex")
     claude = _mcp_status("claude")
-    antigravity_detected = (HOME / ".gemini").exists()
+    agy_path = find_binary("agy") or find_binary("antigravity")
+    antigravity_detected = (HOME / ".gemini").exists() or agy_path is not None
     recommended = (
         "ollama" if ollama_running and ollama_models
+        else "antigravity_cli" if agy_path
         else "codex_cli" if codex["detected"]
         else "claude_cli" if claude["detected"]
         else "ollama"
@@ -121,10 +123,61 @@ def check_environment() -> Dict[str, Any]:
         "claude": claude,
         "antigravity": {
             "detected": antigravity_detected,
+            "cli_detected": agy_path is not None,
+            "cli_path": agy_path or "",
             "skill_installed": (ANTIGRAVITY_SKILLS_DIR / "SKILL.md").exists(),
+            "mcp_installed": _is_antigravity_mcp_installed(),
         },
         "recommended_provider": recommended,
     }
+
+
+def _is_antigravity_mcp_installed() -> bool:
+    import json
+    mcp_configs = [
+        HOME / ".gemini" / "antigravity" / "mcp_config.json",
+        HOME / ".gemini" / "config" / "mcp_config.json",
+    ]
+    for p in mcp_configs:
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if "llmwiki" in data.get("mcpServers", {}):
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def install_antigravity_mcp() -> bool:
+    """Register LLMWiki MCP server inside Antigravity's mcp_config.json."""
+    import json
+    mcp_configs = [
+        HOME / ".gemini" / "antigravity" / "mcp_config.json",
+        HOME / ".gemini" / "config" / "mcp_config.json",
+    ]
+    cli_command = _cli_command()
+    target_entry = {
+        "command": cli_command[0],
+        "args": [*cli_command[1:], "serve-mcp"]
+    }
+    success = False
+    for cfg_path in mcp_configs:
+        try:
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if cfg_path.exists():
+                try:
+                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            servers = data.setdefault("mcpServers", {})
+            servers["llmwiki"] = target_entry
+            cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            success = True
+        except Exception:
+            pass
+    return success
 
 
 def install_antigravity_skill() -> bool:
@@ -143,6 +196,7 @@ def install_antigravity_skill() -> bool:
         return True
     except Exception:
         return False
+
 
 
 def _install_mcp(binary: str) -> bool:
@@ -262,9 +316,12 @@ def bootstrap_installation() -> Dict[str, Any]:
     if env["claude"]["detected"]:
         results["claude"] = install_claude_mcp()
     if env["antigravity"]["detected"]:
-        results["antigravity"] = install_antigravity_skill()
+        skill_res = install_antigravity_skill()
+        mcp_res = install_antigravity_mcp()
+        results["antigravity"] = {"skill": skill_res, "mcp": mcp_res}
 
     cfg = load_config()
+
     updates: Dict[str, Any] = {"initialized": True}
     if not cfg.get("initialized"):
         provider = env.get("recommended_provider", "ollama")

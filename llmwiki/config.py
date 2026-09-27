@@ -44,7 +44,11 @@ DEFAULT_CONFIG = {
     }
 }
 
-VALID_PROVIDERS = {"ollama", "codex_cli", "claude_cli", "antigravity", "claude", "openai"}
+VALID_PROVIDERS = {
+    "ollama", "codex_cli", "claude_cli", "antigravity", "antigravity_cli", "agy_cli",
+    "claude", "openai", "vllm", "lmstudio"
+}
+
 
 def load_config() -> dict:
     """Load configuration from disk with defaults."""

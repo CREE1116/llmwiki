@@ -169,16 +169,73 @@ class Store:
     def search(self, query: str, mode: str = "hybrid", limit: int = 5) -> List[SearchResult]:
         """
         Search across knowledge warehouse:
-        - mode='hybrid': Layer 3 Vector + SQLite FTS5
-        - mode='vector': Layer 3 Vector semantic search
-        - mode='keyword': SQLite FTS5 BM25 search
+        - mode='hybrid': Layer 3 Vector + SQLite FTS5 (RRF fusion)
+        - mode='graph' / 'hipporag': HippoRAG Personalized PageRank spreading activation over hybrid seeds
+        - mode='vector' / 'semantic': Layer 3 Vector semantic search
+        - mode='keyword' / 'fts': SQLite FTS5 BM25 search
         """
         if mode in ("vector", "semantic"):
             return self.vectors.search_semantic(query, top_k=limit)
         elif mode in ("keyword", "fts"):
             return self.db.search(query, limit=limit)
-        else: # default hybrid
+        elif mode in ("graph", "hipporag", "network"):
+            # HippoRAG: Multi-hop graph associative retrieval
+            from .graph import KnowledgeGraph
+            initial_hits = self.vectors.hybrid_search(query, top_k=max(limit * 2, 8))
+            if not initial_hits:
+                return []
+
+            kg = KnowledgeGraph(db=self.db)
+            seed_weights = {h.concept_id: max(0.1, h.score) for h in initial_hits}
+            ppr_scores = kg.personalized_pagerank(seed_weights, alpha=0.85)
+
+            # Pool metadata for all known concepts
+            meta_map = {h.concept_id: h for h in initial_hits}
+
+            # Combine initial semantic relevance with graph topological relevance
+            augmented = []
+            max_ppr = max(ppr_scores.values(), default=1.0) or 1.0
+
+            for cid, ppr in ppr_scores.items():
+                if ppr <= 0:
+                    continue
+                norm_ppr = ppr / max_ppr
+                seed_score = seed_weights.get(cid, 0.0)
+                # Weighted fusion: 60% direct semantic score + 40% graph topological association
+                final_score = 0.6 * seed_score + 0.4 * (norm_ppr * 100.0)
+
+                # Fetch concept metadata if not in seed hits
+                if cid in meta_map:
+                    base = meta_map[cid]
+                else:
+                    c = self.get_concept(cid)
+                    if not c:
+                        continue
+                    base = SearchResult(
+                        concept_id=c.id,
+                        name=c.name,
+                        type=c.type,
+                        summary=c.summary,
+                        tags=c.tags,
+                        score=0.0,
+                        matched_by="graph_ppr"
+                    )
+
+                augmented.append(SearchResult(
+                    concept_id=cid,
+                    name=base.name,
+                    type=base.type,
+                    summary=base.summary,
+                    tags=base.tags,
+                    score=round(final_score, 4),
+                    matched_by="hipporag"
+                ))
+
+            augmented.sort(key=lambda x: x.score, reverse=True)
+            return augmented[:limit]
+        else:  # default hybrid
             return self.vectors.hybrid_search(query, top_k=limit)
+
 
     def get_raw_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve Layer 1 raw document."""

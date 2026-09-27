@@ -16,10 +16,16 @@ class Database:
         self._init_db()
 
     def get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA cache_size = -64000")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA mmap_size = 268435456")
         return conn
+
 
     def _init_db(self):
         """Initialize relational schema and FTS5 full text search table."""
@@ -148,12 +154,19 @@ class Database:
             return []
 
         # Sanitize query for FTS5: wrap words in quotes or escape special characters
-        clean_words = [w.replace('"', '""') for w in query.split() if w.strip()]
+        clean_words = [re.sub(r'[^\w가-힣]', '', w) for w in query.split()]
+        clean_words = [w for w in clean_words if w]
         if not clean_words:
             return []
 
-        # Build query for matching either prefix or exact tokens
-        fts_query = " OR ".join([f'"{w}"*' for w in clean_words])
+        # Build query for matching exact phrase, AND tokens, and OR prefix tokens
+        if len(clean_words) > 1:
+            full_phrase = " ".join(clean_words)
+            and_part = " AND ".join([f'"{w}"*' for w in clean_words])
+            or_part = " OR ".join([f'"{w}"*' for w in clean_words])
+            fts_query = f'"{full_phrase}" OR ({and_part}) OR ({or_part})'
+        else:
+            fts_query = f'"{clean_words[0]}"*'
 
         with self.get_connection() as conn:
             try:
@@ -164,7 +177,7 @@ class Database:
                 FROM concepts_fts
                 JOIN concepts c ON concepts_fts.id = c.id
                 WHERE concepts_fts MATCH ?
-                ORDER BY score
+                ORDER BY score ASC
                 LIMIT ?
                 """, (fts_query, limit))
 
@@ -172,7 +185,7 @@ class Database:
             except sqlite3.OperationalError:
                 # Fallback to simple LIKE search if FTS query syntax error occurs
                 cursor = conn.execute("""
-                SELECT id, name, type, summary, tags_json, 0.0 as score
+                SELECT id, name, type, summary, tags_json, -1.0 as score
                 FROM concepts
                 WHERE name LIKE ? OR summary LIKE ? OR id LIKE ?
                 LIMIT ?
@@ -182,16 +195,21 @@ class Database:
             results = []
             for row in rows:
                 tags = json.loads(row["tags_json"]) if row["tags_json"] else []
+                # SQLite bm25 returns negative values where lower (more negative) is better.
+                # Invert to positive so higher is better for standard search scoring.
+                raw_bm25 = float(row["score"])
+                pos_score = max(0.01, -raw_bm25) if raw_bm25 < 0 else 0.5
                 results.append(SearchResult(
                     concept_id=row["id"],
                     name=row["name"],
                     type=row["type"],
                     summary=row["summary"] or "",
                     tags=tags,
-                    score=abs(float(row["score"])),
+                    score=round(pos_score, 4),
                     matched_by="fts"
                 ))
             return results
+
 
     def get_concept(self, concept_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve concept row by ID."""

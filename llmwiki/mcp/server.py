@@ -23,16 +23,16 @@ class MCPServer:
         return [
             {
                 "name": "wiki_search",
-                "description": "Fast search across the local LLMWiki knowledge warehouse. Returns concise concept IDs, types, and dense summaries.",
+                "description": "Fast search across the local LLMWiki knowledge warehouse. Supports hybrid RRF, vector semantic, keyword, and HippoRAG graph spreading activation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query keywords or semantic concept"},
                         "mode": {
                             "type": "string",
-                            "enum": ["hybrid", "semantic", "keyword"],
+                            "enum": ["hybrid", "semantic", "keyword", "graph", "hipporag"],
                             "default": "hybrid",
-                            "description": "Search mode: hybrid (semantic vector + FTS5), semantic (vector only), keyword (BM25 only)"
+                            "description": "Search mode: hybrid (semantic vector + FTS5 with RRF), semantic (vector only), keyword (BM25 only), graph/hipporag (Personalized PageRank spreading activation)"
                         },
                         "limit": {"type": "integer", "default": 5, "description": "Max results to return"}
                     },
@@ -76,6 +76,34 @@ class MCPServer:
                 }
             },
             {
+                "name": "wiki_find_path",
+                "description": "Find the shortest knowledge reasoning path between two concepts in the knowledge graph.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "start_id": {"type": "string", "description": "Starting concept ID"},
+                        "target_id": {"type": "string", "description": "Target concept ID"}
+                    },
+                    "required": ["start_id", "target_id"]
+                }
+            },
+            {
+                "name": "wiki_graph_analytics",
+                "description": "Run advanced graph analytics: GraphRAG community detection, PageRank core hub concepts, and knowledge bridges.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "analysis_type": {
+                            "type": "string",
+                            "enum": ["communities", "pagerank_hubs", "bridges", "metrics"],
+                            "default": "metrics",
+                            "description": "Type of graph analysis to perform"
+                        },
+                        "top_k": {"type": "integer", "default": 10, "description": "Max items to return"}
+                    }
+                }
+            },
+            {
                 "name": "wiki_list_concepts",
                 "description": "List all distilled concepts currently in the warehouse.",
                 "inputSchema": {
@@ -104,6 +132,7 @@ class MCPServer:
                     "properties": {}
                 }
             }
+
         ]
 
     def call_tool(self, name: str, args: Dict[str, Any]) -> str:
@@ -174,7 +203,61 @@ class MCPServer:
                     lines.append(f"- <- ({c['relation']}) from `[[{c['source_id']}]]`: {c['reason']}")
             return "\n".join(lines)
 
+        elif name == "wiki_find_path":
+            start_id = args.get("start_id", "").strip()
+            target_id = args.get("target_id", "").strip()
+            path = self.graph.find_path(start_id, target_id)
+            if not path:
+                return f"No knowledge reasoning path found between `{start_id}` and `{target_id}`."
+            lines = [f"Reasoning path from `{start_id}` to `{target_id}` ({len(path)} steps):"]
+            for step in path:
+                reason = f" ({step['reason']})" if step.get("reason") else ""
+                lines.append(f"- `{step['from']}` ==[{step['relation']}]==> `{step['to']}`{reason}")
+            return "\n".join(lines)
+
+        elif name == "wiki_graph_analytics":
+            atype = args.get("analysis_type", "metrics")
+            top_k = args.get("top_k", 10)
+
+            if atype == "communities":
+                comms = self.graph.detect_communities()
+                if not comms:
+                    return "No distinct communities detected."
+                lines = [f"Detected {len(comms)} Knowledge Communities:"]
+                for c in comms:
+                    c_ids = [m["id"] for m in c["concepts"][:5]]
+                    lines.append(f"- Community `{c['community_id']}` (Size: {c['size']}, Hub: `{c['hub_concept']}`): {', '.join(c_ids)}")
+                return "\n".join(lines)
+
+            elif atype == "pagerank_hubs":
+                hubs = self.graph.get_central_concepts(top_k=top_k)
+                lines = [f"Top {len(hubs)} Core Hub Concepts (PageRank):"]
+                for h in hubs:
+                    lines.append(f"- `{h['concept_id']}` ({h['name']}): score={h['score']}, degree={h['degree']}")
+                return "\n".join(lines)
+
+            elif atype == "bridges":
+                bridges = self.graph.get_bridges(top_k=top_k)
+                if not bridges:
+                    return "No bridge concepts found."
+                lines = [f"Top {len(bridges)} Knowledge Bridges:"]
+                for b in bridges:
+                    lines.append(f"- `{b['concept_id']}` ({b['name']}): betweenness={b['betweenness']}")
+                return "\n".join(lines)
+
+            else:
+                metrics = self.graph.get_metrics()
+                return (
+                    f"Knowledge Graph Metrics:\n"
+                    f"- Node Count: {metrics['node_count']}\n"
+                    f"- Edge Count: {metrics['edge_count']}\n"
+                    f"- Graph Density: {metrics['density']}\n"
+                    f"- Connected Components: {metrics['connected_components']}\n"
+                    f"- Average Degree: {metrics['avg_degree']}"
+                )
+
         elif name == "wiki_list_concepts":
+
             limit = args.get("limit", 30)
             concepts = self.store.list_concepts(limit=limit)
             if not concepts:

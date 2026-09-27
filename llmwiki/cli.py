@@ -315,9 +315,94 @@ def cmd_delete_concept(args):
 def cmd_graph(args):
     store = Store()
     graph = KnowledgeGraph(db=store.db)
-    cid = args.concept_id
-    neighbors = graph.get_neighbors(cid, hops=args.hops)
 
+    # 1. PageRank hubs query
+    if getattr(args, "pagerank", False):
+        hubs = graph.get_central_concepts(top_k=getattr(args, "top_k", 10))
+        if getattr(args, "json", False):
+            print(json.dumps(hubs, ensure_ascii=False, indent=2))
+            return
+        print(f"[+] Top {len(hubs)} Core Hub Concepts (PageRank):")
+        for i, h in enumerate(hubs, 1):
+            print(f"  [{i}] {h['name']} (`{h['concept_id']}`) | Score: {h['score']:.4f} | Degree: {h['degree']}")
+        return
+
+    # 2. Bridge concepts query
+    if getattr(args, "bridges", False):
+        bridges = graph.get_bridges(top_k=getattr(args, "top_k", 5))
+        if getattr(args, "json", False):
+            print(json.dumps(bridges, ensure_ascii=False, indent=2))
+            return
+        print(f"[+] Top {len(bridges)} Knowledge Bridges (Betweenness Centrality):")
+        for i, b in enumerate(bridges, 1):
+            print(f"  [{i}] {b['name']} (`{b['concept_id']}`) | Betweenness: {b['betweenness']:.4f} | Degree: {b['degree']}")
+        return
+
+    # 3. Community detection query (GraphRAG-style)
+    if getattr(args, "communities", False):
+        comms = graph.detect_communities()
+        if getattr(args, "json", False):
+            print(json.dumps(comms, ensure_ascii=False, indent=2))
+            return
+        print(f"[+] Detected {len(comms)} Knowledge Communities (Thematic Clusters):")
+        for c in comms:
+            members = ", ".join([f"`{m['id']}`" for m in c["concepts"][:5]])
+            suffix = f" ... (+{c['size'] - 5} more)" if c["size"] > 5 else ""
+            print(f"\n  * Community `{c['community_id']}` (Size: {c['size']}, Hub: `{c['hub_concept']}`):")
+            print(f"    Concepts: {members}{suffix}")
+        return
+
+    # 4. Orphan nodes query
+    if getattr(args, "orphans", False):
+        orphans = graph.get_orphans()
+        if getattr(args, "json", False):
+            print(json.dumps(orphans, ensure_ascii=False, indent=2))
+            return
+        print(f"[+] Found {len(orphans)} Isolated/Orphan Concept(s):")
+        for o in orphans:
+            print(f"  * {o['name']} (`{o['concept_id']}`)")
+        return
+
+    # 5. Shortest reasoning path between two concepts
+    if getattr(args, "path", None):
+        target_id = args.path
+        start_id = args.concept_id
+        if not start_id:
+            print("[-] Please provide the starting concept_id to find path.", file=sys.stderr)
+            sys.exit(1)
+        path = graph.find_path(start_id, target_id)
+        if getattr(args, "json", False):
+            print(json.dumps({"from": start_id, "to": target_id, "path": path}, ensure_ascii=False, indent=2))
+            return
+        if not path:
+            print(f"[-] No knowledge path found between `{start_id}` and `{target_id}`.")
+            return
+        print(f"[+] Reasoning Path from `{start_id}` to `{target_id}` ({len(path)} step(s)):")
+        for step in path:
+            reason = f" ({step['reason']})" if step.get("reason") else ""
+            print(f"  `{step['from']}` ==[{step['relation']}]==> `{step['to']}`{reason}")
+        return
+
+    # 6. Default: Neighbors of concept_id
+    cid = args.concept_id
+    if not cid:
+        # Default to showing global graph metrics and top hubs
+        metrics = graph.get_metrics()
+        hubs = graph.get_central_concepts(top_k=5)
+        if getattr(args, "json", False):
+            print(json.dumps({"metrics": metrics, "top_hubs": hubs}, ensure_ascii=False, indent=2))
+            return
+        print("[+] Knowledge Graph Overview:")
+        print(f"    Nodes: {metrics['node_count']} | Edges: {metrics['edge_count']} | Density: {metrics['density']}")
+        print(f"    Connected Components: {metrics['connected_components']} | Avg Degree: {metrics['avg_degree']}")
+        if hubs:
+            print("\n    Top Hub Concepts:")
+            for h in hubs:
+                print(f"      * {h['name']} (`{h['concept_id']}`) [degree: {h['degree']}]")
+        print("\n    Tip: Run `llmwiki graph <concept_id>` to view links, or `--communities` / `--pagerank`.")
+        return
+
+    neighbors = graph.get_neighbors(cid, hops=args.hops)
     if getattr(args, "json", False):
         print(json.dumps(neighbors, ensure_ascii=False, indent=2))
         return
@@ -336,20 +421,30 @@ def cmd_stats(args):
     store = Store()
     stats = store.db.stats()
     raw_docs = store.raw.list_all(limit=5)
+    graph = KnowledgeGraph(db=store.db)
+    metrics = graph.get_metrics()
+    top_hubs = graph.get_central_concepts(top_k=3)
 
     if getattr(args, "json", False):
         stats["recent_sources"] = raw_docs
+        stats["graph_metrics"] = metrics
+        stats["top_hubs"] = top_hubs
         print(json.dumps(stats, ensure_ascii=False, indent=2))
         return
 
-    print("[+] LLMWiki Warehouse Statistics:")
+    print("[+] LLMWiki 3-Tier Warehouse Statistics:")
     print(f"    - Layer 1 Raw Documents: {stats['total_sources']}")
     print(f"    - Layer 2 Atomic Concepts: {stats['total_concepts']}")
-    print(f"    - Layer 3 Knowledge Edges: {stats['total_relations']}")
+    print(f"    - Layer 3 Knowledge Graph: {metrics['edge_count']} edges (Density: {metrics['density']}, Avg Degree: {metrics['avg_degree']})")
+    print(f"    - Total Agent Query Logs: {stats['total_queries']}")
+    if top_hubs:
+        hub_names = [f"`{h['concept_id']}` ({h['name']})" for h in top_hubs]
+        print(f"    - Core Hub Concepts (PageRank): {', '.join(hub_names)}")
     if raw_docs:
         print("\n    Recent Ingested Sources:")
         for r in raw_docs:
             print(f"      * [{r['id']}] {r['title']} ({r['char_count']} chars)")
+
 
 def cmd_logs(args):
     store = Store()
@@ -527,7 +622,12 @@ def main():
     # Search
     p_search = subparsers.add_parser("search", help="Search the knowledge warehouse")
     p_search.add_argument("query", help="Keywords or semantic query")
-    p_search.add_argument("--mode", choices=["hybrid", "semantic", "keyword"], default="hybrid", help="Search mode")
+    p_search.add_argument(
+        "--mode",
+        choices=["hybrid", "semantic", "keyword", "graph", "hipporag"],
+        default="hybrid",
+        help="Search mode: hybrid (RRF), semantic (Vector), keyword (FTS5), graph/hipporag (Personalized PageRank)"
+    )
     p_search.add_argument("--limit", type=int, default=5, help="Max results")
     p_search.add_argument("--caller", default="cli", help="Caller identity for logging (e.g. skill, cli, app)")
     p_search.add_argument("--json", action="store_true", help="Output JSON format")
@@ -555,10 +655,17 @@ def main():
     p_del_concept.add_argument("--json", action="store_true", help="Output JSON format")
 
     # Graph
-    p_graph = subparsers.add_parser("graph", help="Explore concept relations in the knowledge graph")
-    p_graph.add_argument("concept_id", help="Starting concept ID")
-    p_graph.add_argument("--hops", type=int, default=1, help="Hop depth")
+    p_graph = subparsers.add_parser("graph", help="Explore concept relations, communities, and topology in the knowledge graph")
+    p_graph.add_argument("concept_id", nargs="?", default=None, help="Starting concept ID (optional for global graph queries)")
+    p_graph.add_argument("--hops", type=int, default=1, help="Hop depth for neighborhood search")
+    p_graph.add_argument("--pagerank", action="store_true", help="List core hub concepts by PageRank centrality")
+    p_graph.add_argument("--bridges", action="store_true", help="List knowledge bridges by Betweenness centrality")
+    p_graph.add_argument("--communities", action="store_true", help="Detect thematic knowledge clusters (GraphRAG)")
+    p_graph.add_argument("--orphans", action="store_true", help="List unlinked/isolated concepts")
+    p_graph.add_argument("--path", type=str, default=None, help="Find shortest knowledge reasoning path to target concept ID")
+    p_graph.add_argument("--top-k", type=int, default=10, help="Max items for ranking queries")
     p_graph.add_argument("--json", action="store_true", help="Output JSON format")
+
 
     # Graph-Data (Full JSON for Electron/D3/Cytoscape)
     p_graph_data = subparsers.add_parser("graph-data", help="Export full nodes and edges in JSON")
