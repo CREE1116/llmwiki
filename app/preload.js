@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('llmwiki', {
   deleteConcept: (conceptId) => ipcRenderer.invoke('llmwiki:delete-concept', conceptId),
   getLogs: () => ipcRenderer.invoke('llmwiki:get-logs'),
   ingest: (sources, options = {}) => ipcRenderer.invoke('llmwiki:ingest', { sources, options }),
+  deepDive: (conceptId, options = {}) => ipcRenderer.invoke('llmwiki:deep-dive', { conceptId, options }),
   selectFiles: () => ipcRenderer.invoke('llmwiki:select-files'),
   selectFile: () => ipcRenderer.invoke('llmwiki:select-files').then(files => files[0] || null),
   getPathForFile: (file) => webUtils.getPathForFile(file),
@@ -19,3 +20,4 @@ contextBridge.exposeInMainWorld('llmwiki', {
   installSkills: (params) => ipcRenderer.invoke('llmwiki:install-skills', params),
   saveConfig: (params) => ipcRenderer.invoke('llmwiki:save-config', params)
 });
+

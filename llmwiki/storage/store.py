@@ -301,6 +301,27 @@ class Store:
         """Find the best-fitting workspace for a query using vector similarity."""
         return self.vectors.route_query(query)
 
+    def deep_dive(
+        self,
+        concept_id: str,
+        depth: int = 1,
+        max_pages: int = 5,
+        greedy: bool = False,
+        extra_query: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Deep dive into a concept by crawling relevant web pages and synthesizing concepts/relations."""
+        from ..synthesizer.deep_diver import DeepDiver
+        diver = DeepDiver(store=self)
+        return diver.deep_dive(
+            concept_id=concept_id,
+            depth=depth,
+            max_pages=max_pages,
+            greedy=greedy,
+            extra_query=extra_query,
+            workspace=self.workspace
+        )
+
+
 
 
     def get_raw_document(self, doc_id: str) -> Optional[Dict[str, Any]]:

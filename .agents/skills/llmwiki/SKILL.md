@@ -31,7 +31,9 @@ Base project path: `/Users/leejongmin/llmwiki`
 | Find knowledge bridge concepts | `python3 -m llmwiki graph --bridges` |
 | View LLM retrieval audit logs | `python3 -m llmwiki logs --limit 20` |
 | Ingest a new paper (PDF), file, or web URL | `python3 -m llmwiki ingest <file_path_or_url>` |
+| Greedy unbounded web exploration | `python3 -m llmwiki ingest <url> --explore --greedy` |
 | Ingest into specific workspace | `python3 -m llmwiki ingest <path_or_url> --workspace <ws_id>` |
+| Deep dive into a concept via web crawl | `python3 -m llmwiki deep-dive <concept_id> [--depth 1] [--max-pages 5] [--greedy]` |
 | Search with auto-routed workspace | `python3 -m llmwiki search "<query>" --workspace auto` |
 | Search specific workspace or all | `python3 -m llmwiki search "<query>" --workspace <ws_id_or_all>` |
 | List & switch workspaces | `python3 -m llmwiki workspace list` / `use <id>` |
@@ -39,6 +41,7 @@ Base project path: `/Users/leejongmin/llmwiki`
 | Test semantic query routing | `python3 -m llmwiki workspace route "<query>"` |
 | Check warehouse & graph topology statistics | `python3 -m llmwiki stats` |
 | Launch Desktop App (Graph & Logs UI) | `/Users/leejongmin/llmwiki/bin/llmwiki-app` |
+
 
 
 > [!TIP]

@@ -171,9 +171,12 @@ ipcMain.handle('llmwiki:ingest', async (event, request) => {
   const srcList = Array.isArray(sources) ? sources : [sources].filter(Boolean);
   const args = ['ingest', ...srcList];
   if (options.explore) {
-    const depth = Math.max(0, Math.min(3, Number(options.depth) || 1));
-    const maxPages = Math.max(1, Math.min(40, Number(options.maxPages) || 8));
+    const depth = Math.max(0, Math.min(20, Number(options.depth) || 1));
+    const maxPages = options.greedy ? 0 : Math.max(1, Math.min(2000, Number(options.maxPages) || 8));
     args.push('--explore', '--depth', String(depth), '--max-pages', String(maxPages));
+    if (options.greedy) {
+      args.push('--greedy');
+    }
   }
   args.push('--json');
   const res = await runCLI(args);
@@ -181,6 +184,25 @@ ipcMain.handle('llmwiki:ingest', async (event, request) => {
   if (parsed) return parsed;
   return { error: res.error || res.stdout || 'Ingestion failed' };
 });
+
+ipcMain.handle('llmwiki:deep-dive', async (event, request) => {
+  const conceptId = typeof request === 'string' ? request : request?.conceptId;
+  const options = typeof request === 'object' ? (request.options || {}) : {};
+  if (!conceptId) return { error: 'Concept ID is required for deep-dive' };
+
+  const args = ['deep-dive', conceptId];
+  if (options.depth) args.push('--depth', String(Math.max(1, Math.min(20, Number(options.depth)))));
+  if (options.maxPages) args.push('--max-pages', String(Math.max(1, Math.min(2000, Number(options.maxPages)))));
+  if (options.greedy) args.push('--greedy');
+  if (options.query) args.push('--query', String(options.query));
+  args.push('--json');
+
+  const res = await runCLI(args);
+  const parsed = parseJsonSafe(res.stdout);
+  if (parsed) return parsed;
+  return { error: res.error || res.stdout || 'Deep dive failed' };
+});
+
 
 ipcMain.handle('llmwiki:check-env', async () => {
   const res = await runCLI(['check-env', '--json']);

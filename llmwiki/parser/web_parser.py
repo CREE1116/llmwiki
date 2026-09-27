@@ -267,17 +267,88 @@ class WebParser:
         return score
 
     @classmethod
+    def search_candidate_urls(cls, query: str, limit: int = 5, timeout: float = 10.0) -> List[str]:
+        """
+        Find relevant web article URLs for a concept query using public web search
+        and encyclopedia direct resolving (Wikipedia, Namuwiki, etc.).
+        """
+        results: List[str] = []
+        clean_q = query.strip()
+        if not clean_q:
+            return results
+
+        # 1. Direct encyclopedia candidate URLs
+        from urllib.parse import quote
+        encoded_q = quote(clean_q)
+        direct_candidates = [
+            f"https://namu.wiki/w/{encoded_q}",
+            f"https://ko.wikipedia.org/wiki/{encoded_q}",
+            f"https://en.wikipedia.org/wiki/{encoded_q}",
+        ]
+        headers = {"User-Agent": cls.USER_AGENT, "Accept-Language": "ko,en;q=0.8"}
+
+        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            for url in direct_candidates:
+                try:
+                    resp = client.head(url)
+                    if resp.status_code == 200:
+                        results.append(str(resp.url))
+                        if len(results) >= limit:
+                            return results
+                except Exception:
+                    pass
+
+            # 2. DuckDuckGo HTML search fallback
+            try:
+                search_url = f"https://html.duckduckgo.com/html/?q={encoded_q}"
+                resp = client.get(search_url)
+                if resp.status_code == 200:
+                    found_links = re.findall(r'<a class="result__url" href="([^"]+)"', resp.text)
+                    if not found_links:
+                        # Secondary regex for DDG links
+                        found_links = re.findall(r'href="//duckduckgo.com/l/\?uddg=([^&"]+)', resp.text)
+                        found_links = [unquote(l) for l in found_links]
+
+                    for link in found_links:
+                        if link.startswith("//"):
+                            link = "https:" + link
+                        if link.startswith("http") and not any(skip in link for skip in ["duckduckgo.com", "ad_provider"]):
+                            canonical = cls.canonical_url(link)
+                            if canonical not in results:
+                                results.append(canonical)
+                                if len(results) >= limit:
+                                    break
+            except Exception:
+                pass
+
+        # Fallback to the primary direct link if search produced nothing
+        if not results:
+            results.append(direct_candidates[0])
+
+        return results[:limit]
+
+    @classmethod
     def crawl(
         cls,
         start_url: str,
         depth: int = 1,
         max_pages: int = 8,
+        greedy: bool = False,
         same_site: bool = True,
         timeout: float = 15.0,
     ) -> List[Dict[str, Any]]:
-        """Level-bounded crawl with relevance ordering and hard safety caps."""
-        depth = max(0, min(int(depth), 3))
-        max_pages = max(1, min(int(max_pages), 40))
+        """
+        Relevance-ordered web crawler with custom depth, max pages, and greedy infinite exploration.
+        - greedy=True: Unbounded exploration following all relevant frontier links up to a safe 10,000-page limit.
+        - max_pages=0: Also triggers greedy/unbounded exploration.
+        """
+        if greedy or int(max_pages) <= 0:
+            depth = max(1, min(int(depth) if depth else 10, 50))
+            max_pages = 10000  # Safe upper cap for greedy infinite mode
+        else:
+            depth = max(0, min(int(depth), 20))
+            max_pages = max(1, min(int(max_pages), 2000))
+
         root_url = cls.canonical_url(start_url)
         root_page = cls.parse(root_url, timeout=timeout)
         root_url = root_page["source"]
@@ -318,7 +389,7 @@ class WebParser:
         frontier = collect_candidates(root_page, set())
 
         for current_depth in range(1, depth + 1):
-            quota = level_quotas.get(current_depth, 0)
+            quota = level_quotas.get(current_depth, remaining) if not greedy else remaining
             if quota <= 0 or not frontier or len(pages) >= max_pages:
                 break
 
@@ -357,3 +428,4 @@ class WebParser:
             frontier = list(next_by_url.values())
 
         return pages
+

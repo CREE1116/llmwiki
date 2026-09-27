@@ -106,9 +106,11 @@
                 <h2 id="inspector-title">개념 상세</h2>
               </div>
               <div class="drawer-actions">
+                <button id="btn-deep-dive-concept" class="btn btn-primary-soft" title="웹에서 관련 지식을 자동 탐색하고 그래프를 확장합니다">🌐 딥다이브</button>
                 <button id="btn-delete-current-concept" class="btn btn-danger-soft" title="개념 삭제">삭제</button>
                 <button id="btn-close-inspector" class="icon-btn" aria-label="닫기">×</button>
               </div>
+
             </div>
             <div class="drawer-body">
               <div class="badge-row">
@@ -218,32 +220,43 @@
             <div class="stack">
               <input id="ingest-url-input" class="text-input" type="url" placeholder="https://example.com/document">
               <div class="web-explore-options">
-                <label class="web-explore-toggle">
-                  <input id="ingest-explore-web" type="checkbox" checked>
-                  <span>연결된 문서도 탐색</span>
-                </label>
-                <div class="web-explore-limits">
-                  <label>
-                    <span>깊이</span>
-                    <select id="ingest-explore-depth" class="compact-select">
-                      <option value="1" selected>1</option>
-                      <option value="2">2</option>
-                      <option value="3">3</option>
-                    </select>
+                <div class="web-explore-toggles">
+                  <label class="web-explore-toggle">
+                    <input id="ingest-explore-web" type="checkbox" checked>
+                    <span>연결된 문서도 탐색</span>
                   </label>
-                  <label>
-                    <span>최대 문서</span>
-                    <select id="ingest-explore-pages" class="compact-select">
-                      <option value="5">5</option>
-                      <option value="8" selected>8</option>
-                      <option value="12">12</option>
-                      <option value="20">20</option>
-                    </select>
+                  <label class="web-explore-toggle greedy-toggle" title="최대 문서 수 제한 없이 연결된 모든 문서를 끝까지 탐색합니다.">
+                    <input id="ingest-explore-greedy" type="checkbox">
+                    <span class="greedy-badge">🚀 그리디 모드 (무한 탐색)</span>
                   </label>
                 </div>
-                <p class="web-explore-help">같은 사이트의 관련 문서만 제한적으로 따라갑니다. 나무위키는 문서 링크만 탐색합니다.</p>
+                <div class="web-explore-limits">
+                  <label>
+                    <span>깊이 (Depth)</span>
+                    <input id="ingest-explore-depth" type="number" min="0" max="20" value="1" class="compact-number-input" list="depth-presets">
+                    <datalist id="depth-presets">
+                      <option value="1">1 (직접 링크)</option>
+                      <option value="2">2 (2단계 확장)</option>
+                      <option value="3">3 (3단계 확장)</option>
+                      <option value="5">5 (심층 탐색)</option>
+                    </datalist>
+                  </label>
+                  <label>
+                    <span id="label-explore-pages">최대 문서 (Max Pages)</span>
+                    <input id="ingest-explore-pages" type="number" min="1" max="2000" value="8" class="compact-number-input" list="pages-presets">
+                    <datalist id="pages-presets">
+                      <option value="5">5개</option>
+                      <option value="8">8개</option>
+                      <option value="15">15개</option>
+                      <option value="30">30개</option>
+                      <option value="100">100개</option>
+                    </datalist>
+                  </label>
+                </div>
+                <p id="web-explore-help-text" class="web-explore-help">같은 사이트의 관련 문서만 따라갑니다. 원하는 깊이와 최대 문서 수를 직접 숫자로 입력할 수 있습니다.</p>
               </div>
               <button id="btn-ingest-url" class="btn btn-primary">주소에서 가져오기</button>
+
             </div>
           </section>
           <section class="import-card">

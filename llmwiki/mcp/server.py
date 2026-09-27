@@ -161,7 +161,23 @@ class MCPServer:
                         "workspace": {"type": "string", "description": "Optional workspace filter"}
                     }
                 }
+            },
+            {
+                "name": "wiki_deep_dive",
+                "description": "Perform autonomous web deep-dive on a concept: crawls related web articles, discovers mechanisms, and links new atomic concepts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "concept_id": {"type": "string", "description": "Target concept ID to expand"},
+                        "depth": {"type": "integer", "default": 1, "description": "Crawl depth"},
+                        "max_pages": {"type": "integer", "default": 5, "description": "Maximum web pages to crawl"},
+                        "greedy": {"type": "boolean", "default": False, "description": "Greedy unbounded web exploration"},
+                        "workspace": {"type": "string", "description": "Target workspace"}
+                    },
+                    "required": ["concept_id"]
+                }
             }
+
 
 
         ]
@@ -357,7 +373,26 @@ class MCPServer:
                 f"- Total Raw Documents (Layer 1): {stats['total_sources']}"
             )
 
+        elif name == "wiki_deep_dive":
+            cid = args.get("concept_id", "").strip()
+            depth = args.get("depth", 1)
+            max_pages = args.get("max_pages", 5)
+            greedy = args.get("greedy", False)
+            ws = args.get("workspace")
+            target_store = Store(workspace=ws) if ws else self.store
+            res = target_store.deep_dive(cid, depth=depth, max_pages=max_pages, greedy=greedy)
+            if res.get("error"):
+                return f"Deep dive error: {res['error']}"
+            concepts_str = ", ".join(f"`{c['id']}` ({c['name']})" for c in res.get("new_concepts", []))
+            return (
+                f"Autonomous Deep Dive Complete for `{cid}`:\n"
+                f"- Crawled Web Pages: {res.get('crawled_pages', 0)}\n"
+                f"- New Concepts Synthesized ({len(res.get('new_concepts', []))}): {concepts_str or 'None'}\n"
+                f"- New Graph Relations Established: {res.get('new_relations', 0)}"
+            )
+
         return f"Unknown tool: {name}"
+
 
     def run_stdio(self):
 

@@ -44,8 +44,10 @@ def cmd_ingest(args):
                     source,
                     depth=getattr(args, "depth", 1),
                     max_pages=getattr(args, "max_pages", 8),
+                    greedy=getattr(args, "greedy", False),
                     same_site=True,
                 )
+
                 if not getattr(args, "json", False):
                     print(f"[*] [{i}/{total}] Found {len(parsed_items)} relevant page(s) from '{source}'")
             else:
@@ -205,7 +207,50 @@ def cmd_search(args):
         print()
 
 
+def cmd_deep_dive(args):
+    store = Store(workspace=getattr(args, "workspace", None))
+    caller = getattr(args, "caller", "cli")
+    cid = args.concept_id
+
+    if not getattr(args, "json", False):
+        greedy_str = " (Greedy Unbounded Mode)" if getattr(args, "greedy", False) else ""
+        print(f"[*] Starting autonomous web deep-dive for concept `{cid}`{greedy_str}...")
+
+    res = store.deep_dive(
+        concept_id=cid,
+        depth=getattr(args, "depth", 1),
+        max_pages=getattr(args, "max_pages", 5),
+        greedy=getattr(args, "greedy", False),
+        extra_query=getattr(args, "query", None)
+    )
+
+    store.db.log_query(
+        caller=caller,
+        action="deep_dive",
+        query=cid,
+        details={"crawled_pages": res.get("crawled_pages", 0), "new_concepts": len(res.get("new_concepts", []))},
+        result_count=len(res.get("new_concepts", [])),
+        workspace=res.get("workspace", "default")
+    )
+
+    if getattr(args, "json", False):
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return
+
+    if res.get("error"):
+        print(f"[-] {res['error']}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[+] {res['message']}")
+    if res.get("new_concepts"):
+        print("\n    Synthesized Concepts:")
+        for nc in res["new_concepts"]:
+            print(f"      * `{nc['id']}` ({nc['name']}) [{nc['type']}]")
+        print("\n    Explore new links with `llmwiki graph " + cid + " --hops 2`")
+
+
 def cmd_get(args):
+
     store = Store()
     caller = getattr(args, "caller", "cli")
     cid = args.concept_id
@@ -731,10 +776,23 @@ def main():
     p_ingest = subparsers.add_parser("ingest", help="Ingest file(s) (PDF, MD, TXT), URL(s), or stdin (-)")
     p_ingest.add_argument("sources", nargs="+", help="Path to file(s), web URL(s), or '-' for stdin")
     p_ingest.add_argument("--explore", action="store_true", help="Follow relevant same-site links for web URLs")
-    p_ingest.add_argument("--depth", type=int, choices=[0, 1, 2, 3], default=1, help="Web exploration depth (default: 1)")
-    p_ingest.add_argument("--max-pages", type=int, default=8, help="Maximum web pages per starting URL (default: 8, hard cap: 40)")
+    p_ingest.add_argument("--depth", type=int, default=1, help="Web exploration depth (default: 1)")
+    p_ingest.add_argument("--max-pages", type=int, default=8, help="Maximum web pages per starting URL (default: 8, 0 for unlimited)")
+    p_ingest.add_argument("--greedy", action="store_true", help="Greedy unbounded exploration of all connected links")
     p_ingest.add_argument("--workspace", "-w", default=None, help="Target workspace for ingested concepts (defaults to active workspace)")
     p_ingest.add_argument("--json", action="store_true", help="Output JSON format")
+
+    # Deep dive
+    p_deep_dive = subparsers.add_parser("deep-dive", help="Autonomous web deep-dive: crawl and synthesize knowledge around a concept")
+    p_deep_dive.add_argument("concept_id", help="Target concept ID to expand")
+    p_deep_dive.add_argument("--depth", type=int, default=1, help="Web crawl depth (default: 1)")
+    p_deep_dive.add_argument("--max-pages", type=int, default=5, help="Maximum web pages to crawl (default: 5)")
+    p_deep_dive.add_argument("--greedy", action="store_true", help="Greedy unbounded web exploration")
+    p_deep_dive.add_argument("--query", "-q", default=None, help="Supplemental search keywords")
+    p_deep_dive.add_argument("--workspace", "-w", default=None, help="Target workspace")
+    p_deep_dive.add_argument("--caller", default="cli", help="Caller identity for logging")
+    p_deep_dive.add_argument("--json", action="store_true", help="Output JSON format")
+
 
     # Search
     p_search = subparsers.add_parser("search", help="Search the knowledge warehouse")
@@ -878,7 +936,10 @@ def main():
     args = parser.parse_args()
     if args.command == "ingest":
         cmd_ingest(args)
+    elif args.command == "deep-dive":
+        cmd_deep_dive(args)
     elif args.command == "search":
+
         cmd_search(args)
     elif args.command == "get":
         cmd_get(args)

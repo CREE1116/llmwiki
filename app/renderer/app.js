@@ -116,7 +116,66 @@ function setupGraph() {
     }
   });
 
+  const deepDiveBtn = document.getElementById('btn-deep-dive-concept');
+  if (deepDiveBtn) {
+    deepDiveBtn.addEventListener('click', async () => {
+      const node = state.selectedNode;
+      if (!node?.id) return;
+      deepDiveBtn.disabled = true;
+      const originalText = deepDiveBtn.textContent;
+      deepDiveBtn.textContent = '🌐 탐색 중…';
+
+      setProgress({
+        title: `'${node.name || node.id}' 딥다이브 탐색 중…`,
+        percent: 30,
+        detail: '웹에서 관련 키워드와 문서를 크롤링하여 지식 그래프를 확장합니다.',
+        count: '딥다이브 중',
+        indeterminate: true,
+        state: 'running'
+      });
+
+      beginLiveGraphRefresh();
+      try {
+        const res = await window.llmwiki.deepDive(node.id, { depth: 1, maxPages: 5, greedy: false });
+        if (res && !res.error) {
+          const count = res.new_concepts?.length || 0;
+          const relCount = res.new_relations || 0;
+          setProgress({
+            title: '딥다이브 완료',
+            percent: 100,
+            detail: `${count}개 신규 개념과 ${relCount}개 연결 관계를 지식 그래프에 자동 추가했습니다.`,
+            count: '완료',
+            state: 'success'
+          });
+          await refreshAll();
+          if (state.selectedNode?.id === node.id) {
+            await showInspector(state.selectedNode);
+          }
+        } else {
+          setProgress({
+            title: '딥다이브 실패',
+            percent: 100,
+            detail: res?.error || '웹 탐색 중 지식을 증류하지 못했습니다.',
+            state: 'error'
+          });
+        }
+      } catch (err) {
+        setProgress({
+          title: '오류 발생',
+          percent: 100,
+          detail: err.message || '딥다이브 요청 처리 중 오류가 발생했습니다.',
+          state: 'error'
+        });
+      } finally {
+        await endLiveGraphRefresh();
+        deepDiveBtn.disabled = false;
+        deepDiveBtn.textContent = originalText;
+      }
+    });
+  }
+
   canvas.addEventListener('mousedown', event => {
+
     const point = screenToWorld(event.clientX, event.clientY);
     const node = hitNode(point.x, point.y);
     if (node) {
@@ -1019,6 +1078,23 @@ function setupIngest() {
   const dropZone = document.getElementById('file-drop-zone');
   const input = document.getElementById('ingest-url-input');
 
+  const greedyToggle = document.getElementById('ingest-explore-greedy');
+  if (greedyToggle) {
+    greedyToggle.addEventListener('change', () => {
+      const pagesInput = document.getElementById('ingest-explore-pages');
+      const helpText = document.getElementById('web-explore-help-text');
+      if (greedyToggle.checked) {
+        pagesInput.disabled = true;
+        pagesInput.value = '0';
+        if (helpText) helpText.textContent = '🚀 그리디 모드: 최대 문서 수 제한 없이 연결된 모든 관련 링크를 무한 탐색합니다.';
+      } else {
+        pagesInput.disabled = false;
+        pagesInput.value = '8';
+        if (helpText) helpText.textContent = '같은 사이트의 관련 문서만 따라갑니다. 원하는 깊이와 최대 문서 수를 직접 숫자로 입력할 수 있습니다.';
+      }
+    });
+  }
+
   document.getElementById('btn-ingest-url').addEventListener('click', async () => {
     const url = input.value.trim();
     if (!url) {
@@ -1031,13 +1107,14 @@ function setupIngest() {
     }
     const button = document.getElementById('btn-ingest-url');
     const explore = document.getElementById('ingest-explore-web').checked;
+    const greedy = document.getElementById('ingest-explore-greedy')?.checked || false;
     const depth = Number(document.getElementById('ingest-explore-depth').value || 1);
-    const maxPages = Number(document.getElementById('ingest-explore-pages').value || 8);
+    const maxPages = greedy ? 0 : Number(document.getElementById('ingest-explore-pages').value || 8);
     button.disabled = true;
     setProgress({
-      title: explore ? '연결 문서 탐색 중…' : '웹페이지 분석 중…',
+      title: explore ? (greedy ? '🚀 그리디 무한 탐색 중…' : '연결 문서 탐색 중…') : '웹페이지 분석 중…',
       percent: 30,
-      detail: explore ? `깊이 ${depth} · 최대 ${maxPages}개 문서 · ${url}` : url,
+      detail: explore ? (greedy ? `깊이 ${depth} · 무한(그리디) 탐색 · ${url}` : `깊이 ${depth} · 최대 ${maxPages}개 문서 · ${url}`) : url,
       count: explore ? '탐색 중' : '파싱 중',
       indeterminate: true,
       state: 'running'
@@ -1045,7 +1122,7 @@ function setupIngest() {
 
     beginLiveGraphRefresh();
     try {
-      const result = await window.llmwiki.ingest([url], { explore, depth, maxPages });
+      const result = await window.llmwiki.ingest([url], { explore, depth, maxPages, greedy });
       if (result && !result.error) {
         const documents = Array.isArray(result) ? result.length : 1;
         const concepts = Array.isArray(result)
@@ -1058,6 +1135,7 @@ function setupIngest() {
           count: '100%',
           state: 'success'
         });
+
         input.value = '';
         await refreshAll();
       } else {
