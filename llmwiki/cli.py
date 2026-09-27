@@ -924,7 +924,7 @@ def main():
 
     # Save-config
     p_cfg = subparsers.add_parser("save-config", help="Update settings")
-    p_cfg.add_argument("--provider", choices=["ollama", "codex_cli", "claude_cli", "antigravity", "claude", "openai"])
+    p_cfg.add_argument("--provider", type=str, help="LLM inference provider (e.g. ollama, antigravity_cli, antigravity, codex_cli, claude_cli, openai)")
     p_cfg.add_argument("--model", type=str)
     p_cfg.add_argument("--api-key", type=str)
     p_cfg.add_argument("--initialized", action="store_true")
