@@ -672,11 +672,13 @@ def cmd_check_env(args):
     print(f"    - Current Provider: {cfg.get('provider')} ({cfg.get('model')})")
 
 def cmd_install_skills(args):
-    from .installer import install_antigravity_skill, install_claude_mcp, install_codex_mcp, install_cli_symlink
+    from .installer import install_antigravity_skill, install_antigravity_mcp, install_claude_mcp, install_codex_mcp, install_cli_symlink
     results = {}
     install_all = args.all or not (args.antigravity or args.claude or args.codex or args.symlink)
     if args.antigravity or install_all:
-        results["antigravity"] = install_antigravity_skill()
+        skill_res = install_antigravity_skill()
+        mcp_res = install_antigravity_mcp()
+        results["antigravity"] = bool(skill_res or mcp_res)
     if args.claude or install_all:
         results["claude"] = install_claude_mcp()
     if args.codex or install_all:

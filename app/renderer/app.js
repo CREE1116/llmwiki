@@ -1499,6 +1499,10 @@ function setupSettings() {
     });
   });
   document.getElementById('select-ollama-model').addEventListener('click', event => event.stopPropagation());
+  const btnConnectAntigravity = document.getElementById('btn-connect-antigravity');
+  if (btnConnectAntigravity) {
+    btnConnectAntigravity.addEventListener('click', () => connectAgent('antigravity'));
+  }
   document.getElementById('btn-connect-codex').addEventListener('click', () => connectAgent('codex'));
   document.getElementById('btn-connect-claude').addEventListener('click', () => connectAgent('claude'));
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
@@ -1520,6 +1524,7 @@ async function refreshEnvironment() {
   state.environment = response;
   const { env, config } = response;
   updateEngine('ollama', Boolean(env.ollama?.running && env.ollama?.models?.length));
+  updateEngine('antigravity_cli', Boolean(env.antigravity?.cli_detected || env.antigravity?.detected));
   updateEngine('codex_cli', Boolean(env.codex?.detected));
   updateEngine('claude_cli', Boolean(env.claude?.detected));
   const modelSelect = document.getElementById('select-ollama-model');
@@ -1531,18 +1536,24 @@ async function refreshEnvironment() {
     return option;
   }));
   modelSelect.classList.toggle('hidden', !env.ollama?.models?.length);
-  const validCurrent = ['ollama', 'codex_cli', 'claude_cli'].includes(config?.provider)
-    && !document.querySelector(`.engine-card[data-provider="${config.provider}"]`)?.disabled;
-  selectProvider(validCurrent ? config.provider : env.recommended_provider);
+  const normalizedProvider = config?.provider === 'antigravity' ? 'antigravity_cli' : config?.provider;
+  const validCurrent = ['ollama', 'antigravity_cli', 'codex_cli', 'claude_cli'].includes(normalizedProvider)
+    && !document.querySelector(`.engine-card[data-provider="${normalizedProvider}"]`)?.disabled;
+  selectProvider(validCurrent ? normalizedProvider : env.recommended_provider);
+  updateConnectionRow('antigravity', env.antigravity);
   updateConnectionRow('codex', env.codex);
   updateConnectionRow('claude', env.claude);
 }
 
 function updateEngine(provider, available) {
   const card = document.querySelector(`.engine-card[data-provider="${provider}"]`);
+  if (!card) return;
   card.disabled = !available;
-  const statusId = provider === 'ollama' ? 'status-ollama' : `status-${provider.replace('_', '-')}`;
-  document.getElementById(statusId).classList.toggle('online', available);
+  const statusId = provider === 'ollama' ? 'status-ollama' : `status-${provider.replace(/_/g, '-')}`;
+  const statusEl = document.getElementById(statusId);
+  if (statusEl) {
+    statusEl.classList.toggle('online', available);
+  }
 }
 
 function selectProvider(provider) {
@@ -1555,11 +1566,14 @@ function selectProvider(provider) {
 function updateConnectionRow(agent, info) {
   const copy = document.getElementById(`${agent}-connection-copy`);
   const button = document.getElementById(`btn-connect-${agent}`);
-  if (!info?.detected) {
-    copy.textContent = 'CLI를 찾지 못했습니다';
+  if (!button || !copy) return;
+  const isDetected = Boolean(info?.detected || info?.cli_detected);
+  const isConnected = Boolean(info?.mcp_installed || info?.skill_installed);
+  if (!isDetected) {
+    copy.textContent = 'CLI/환경을 찾지 못했습니다';
     button.textContent = '사용 불가';
     button.disabled = true;
-  } else if (info.mcp_installed) {
+  } else if (isConnected) {
     copy.textContent = 'LLMWiki 연결됨';
     button.textContent = '연결됨';
     button.disabled = true;
@@ -1572,17 +1586,18 @@ function updateConnectionRow(agent, info) {
 
 async function connectAgent(agent) {
   const button = document.getElementById(`btn-connect-${agent}`);
-  button.disabled = true;
-  setSettingsMessage(`${agent === 'codex' ? 'Codex' : 'Claude Code'}에 연결하고 있습니다.`);
+  if (button) button.disabled = true;
+  const agentName = agent === 'antigravity' ? 'Antigravity' : (agent === 'codex' ? 'Codex' : 'Claude Code');
+  setSettingsMessage(`${agentName}에 연결하고 있습니다.`);
   const result = await window.llmwiki.installSkills({
     codex: agent === 'codex',
     claude: agent === 'claude',
-    antigravity: false,
-    symlink: false,
+    antigravity: agent === 'antigravity',
+    symlink: agent === 'antigravity',
   });
   if (result?.error || result?.[agent] === false) {
     setSettingsMessage(result?.error || '연결하지 못했습니다.', 'error');
-    button.disabled = false;
+    if (button) button.disabled = false;
     return;
   }
   await refreshEnvironment();

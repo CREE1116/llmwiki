@@ -342,6 +342,11 @@
               <small>완전 로컬 처리</small>
               <select id="select-ollama-model" class="model-select hidden"></select>
             </button>
+            <button class="engine-card" data-provider="antigravity_cli">
+              <span class="engine-status" id="status-antigravity-cli"></span>
+              <strong>Antigravity CLI</strong>
+              <small>Google Antigravity agy 사용</small>
+            </button>
             <button class="engine-card" data-provider="codex_cli">
               <span class="engine-status" id="status-codex-cli"></span>
               <strong>Codex CLI</strong>
@@ -360,6 +365,10 @@
             <div><h3>에이전트에서 LLMWiki 사용</h3><p>MCP로 연결하면 대화 중 이 지식 저장소를 검색할 수 있습니다.</p></div>
           </div>
           <div class="connection-list">
+            <div class="connection-row">
+              <div><strong>Antigravity</strong><span id="antigravity-connection-copy">확인 중</span></div>
+              <button id="btn-connect-antigravity" class="btn btn-quiet">연결</button>
+            </div>
             <div class="connection-row">
               <div><strong>Codex</strong><span id="codex-connection-copy">확인 중</span></div>
               <button id="btn-connect-codex" class="btn btn-quiet">연결</button>

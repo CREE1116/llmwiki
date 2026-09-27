@@ -645,7 +645,7 @@ h1 { font-size: 24px; line-height: 1.15; letter-spacing: -.035em; font-weight: 6
 .section-heading { display: flex; justify-content: space-between; margin-bottom: 13px; }
 .section-heading h3 { font-size: 13px; }
 .section-heading p { color: var(--muted); font-size: 10px; margin-top: 5px; }
-.engine-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
+.engine-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
 .engine-card {
   position: relative; min-height: 122px;
   display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
