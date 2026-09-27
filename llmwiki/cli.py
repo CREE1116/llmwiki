@@ -10,6 +10,7 @@ from pathlib import Path
 from .storage.store import Store
 from .storage.graph import KnowledgeGraph
 from .storage.models import Relation
+from .config import get_active_workspace, set_active_workspace
 from .parser import parse_source
 from .parser.web_parser import WebParser
 from .synthesizer.distiller import Distiller
@@ -17,8 +18,10 @@ from .mcp.server import MCPServer
 
 def cmd_ingest(args):
     sources = args.sources
-    store = Store()
+    target_ws = getattr(args, "workspace", None)
+    store = Store(workspace=target_ws)
     distiller = Distiller(store=store)
+
     total = len(sources)
     all_results = []
     page_primary = {}
@@ -157,14 +160,15 @@ def cmd_ingest(args):
 def cmd_search(args):
     store = Store()
     caller = getattr(args, "caller", "cli")
-    hits = store.search(query=args.query, mode=args.mode, limit=args.limit)
+    ws = getattr(args, "workspace", "auto")
+    hits = store.search(query=args.query, mode=args.mode, limit=args.limit, workspace=ws)
 
     # Log query
     store.db.log_query(
         caller=caller,
         action="search",
         query=args.query,
-        details={"mode": args.mode, "matched_ids": [h.concept_id for h in hits]},
+        details={"mode": args.mode, "workspace": ws, "matched_ids": [h.concept_id for h in hits]},
         result_count=len(hits)
     )
 
@@ -177,7 +181,8 @@ def cmd_search(args):
                 "summary": h.summary,
                 "tags": h.tags,
                 "score": h.score,
-                "matched_by": h.matched_by
+                "matched_by": h.matched_by,
+                "workspace": h.workspace
             }
             for h in hits
         ]
@@ -185,16 +190,20 @@ def cmd_search(args):
         return
 
     if not hits:
-        print(f"[-] No concepts found matching '{args.query}' (mode: {args.mode})")
+        scope_str = f" in workspace '{ws}'" if ws and ws not in ("auto", "all") else ""
+        print(f"[-] No concepts found matching '{args.query}' (mode: {args.mode}{scope_str})")
         return
 
-    print(f"[+] Found {len(hits)} match(es) for '{args.query}' [Mode: {args.mode}]:\n")
+    scope_info = f" [Scope: {ws}]" if ws else ""
+    print(f"[+] Found {len(hits)} match(es) for '{args.query}' [Mode: {args.mode}]{scope_info}:\n")
     for i, h in enumerate(hits, 1):
-        print(f"[{i}] {h.name} (`{h.concept_id}`) | Score: {h.score:.4f} | Type: {h.type}")
+        ws_badge = f" | Workspace: [{h.workspace}]" if h.workspace else ""
+        print(f"[{i}] {h.name} (`{h.concept_id}`) | Score: {h.score:.4f}{ws_badge} | Type: {h.type}")
         print(f"    Summary: {h.summary}")
         if h.tags:
             print(f"    Tags: {', '.join(h.tags)}")
         print()
+
 
 def cmd_get(args):
     store = Store()
@@ -419,20 +428,27 @@ def cmd_graph(args):
 
 def cmd_stats(args):
     store = Store()
-    stats = store.db.stats()
+    target_ws = getattr(args, "workspace", None)
+    active_ws = get_active_workspace()
+    stats = store.db.stats(workspace=target_ws)
     raw_docs = store.raw.list_all(limit=5)
     graph = KnowledgeGraph(db=store.db)
     metrics = graph.get_metrics()
     top_hubs = graph.get_central_concepts(top_k=3)
+    workspaces = store.list_workspaces()
 
     if getattr(args, "json", False):
         stats["recent_sources"] = raw_docs
         stats["graph_metrics"] = metrics
         stats["top_hubs"] = top_hubs
+        stats["active_workspace"] = active_ws
+        stats["workspaces"] = [w.to_dict() for w in workspaces]
         print(json.dumps(stats, ensure_ascii=False, indent=2))
         return
 
-    print("[+] LLMWiki 3-Tier Warehouse Statistics:")
+    ws_header = f" (Workspace: '{target_ws}')" if target_ws else ""
+    print(f"[+] LLMWiki 3-Tier Warehouse Statistics{ws_header}:")
+    print(f"    - Active Workspace: `{active_ws}` (Total Workspaces: {len(workspaces)})")
     print(f"    - Layer 1 Raw Documents: {stats['total_sources']}")
     print(f"    - Layer 2 Atomic Concepts: {stats['total_concepts']}")
     print(f"    - Layer 3 Knowledge Graph: {metrics['edge_count']} edges (Density: {metrics['density']}, Avg Degree: {metrics['avg_degree']})")
@@ -444,6 +460,101 @@ def cmd_stats(args):
         print("\n    Recent Ingested Sources:")
         for r in raw_docs:
             print(f"      * [{r['id']}] {r['title']} ({r['char_count']} chars)")
+
+
+def cmd_workspace(args):
+    store = Store()
+    action = args.ws_action
+    active_ws = get_active_workspace()
+
+    if action == "list":
+        workspaces = store.list_workspaces()
+        ws_data = []
+        for ws in workspaces:
+            st = store.db.stats(workspace=ws.id)
+            is_active = (ws.id == active_ws)
+            ws_data.append({
+                "id": ws.id,
+                "name": ws.name,
+                "description": ws.description,
+                "concepts": st["total_concepts"],
+                "active": is_active,
+                "created_at": ws.created_at
+            })
+
+        if getattr(args, "json", False):
+            print(json.dumps(ws_data, ensure_ascii=False, indent=2))
+            return
+
+        print("[+] LLMWiki Workspaces:\n")
+        for w in ws_data:
+            marker = "* " if w["active"] else "  "
+            desc_str = f" - {w['description']}" if w["description"] else ""
+            print(f"{marker}`{w['id']}` ({w['name'] or 'Unnamed'}) [{w['concepts']} concepts]{desc_str}")
+        print(f"\n    Active: `{active_ws}` (Switch with `llmwiki workspace use <id>`)")
+
+    elif action == "create":
+        ws = store.create_workspace(
+            workspace_id=args.id,
+            name=getattr(args, "name", "") or "",
+            description=getattr(args, "desc", "") or ""
+        )
+        if getattr(args, "json", False):
+            print(json.dumps(ws.to_dict(), ensure_ascii=False, indent=2))
+            return
+        print(f"[+] Workspace `{ws.id}` created successfully ({ws.name}).")
+
+    elif action == "use":
+        target = args.id.strip()
+        ws = store.get_workspace(target)
+        if not ws and target != "default":
+            ws = store.create_workspace(target, name=target.capitalize())
+            print(f"[*] Workspace `{target}` did not exist; created automatically.")
+        new_active = set_active_workspace(target)
+        if getattr(args, "json", False):
+            print(json.dumps({"active_workspace": new_active}, ensure_ascii=False))
+            return
+        print(f"[+] Switched active workspace to `{new_active}`.")
+
+    elif action == "current":
+        if getattr(args, "json", False):
+            print(json.dumps({"active_workspace": active_ws}, ensure_ascii=False))
+            return
+        print(f"[+] Current active workspace: `{active_ws}`")
+
+    elif action == "delete":
+        target = args.id.strip()
+        if target == "default":
+            print("[-] Cannot delete the default workspace.", file=sys.stderr)
+            sys.exit(1)
+        success = store.delete_workspace(target)
+        if target == active_ws:
+            set_active_workspace("default")
+        if getattr(args, "json", False):
+            print(json.dumps({"deleted": target, "success": success}, ensure_ascii=False))
+            return
+        if success:
+            print(f"[+] Workspace `{target}` deleted. (Active reverted to 'default')")
+        else:
+            print(f"[-] Workspace `{target}` not found.")
+
+    elif action == "sync":
+        store.vectors.sync_all_workspace_vectors()
+        if getattr(args, "json", False):
+            print(json.dumps({"status": "synced"}, ensure_ascii=False))
+            return
+        print("[+] All workspace representative centroid vectors synchronized.")
+
+    elif action == "route":
+        routed_ws, score = store.route_workspace(args.query)
+        if getattr(args, "json", False):
+            print(json.dumps({"query": args.query, "recommended_workspace": routed_ws, "score": score}, ensure_ascii=False))
+            return
+        print(f"[+] Query Semantic Routing for: '{args.query}'")
+        if routed_ws:
+            print(f"    -> Best-matching workspace: `{routed_ws}` (similarity: {score:.4f})")
+        else:
+            print("    -> No matching workspace found (using global search).")
 
 
 def cmd_logs(args):
@@ -469,12 +580,17 @@ def cmd_graph_data(args):
 
 def cmd_list_concepts(args):
     store = Store()
-    concepts = store.list_concepts(limit=args.limit)
+    target_ws = getattr(args, "workspace", None)
+    concepts = store.list_concepts(limit=args.limit, workspace=target_ws)
     if getattr(args, "json", False):
         print(json.dumps(concepts, ensure_ascii=False, indent=2))
         return
+    ws_note = f" (Workspace: {target_ws})" if target_ws else ""
+    print(f"[+] Concepts{ws_note}:")
     for c in concepts:
-        print(f"- `{c['id']}`: {c['name']} [{c['type']}] ({c['summary'][:80]}...)")
+        ws_badge = f" [{c.get('workspace', 'default')}]" if c.get("workspace") else ""
+        print(f"- `{c['id']}`{ws_badge}: {c['name']} [{c['type']}] ({c['summary'][:80]}...)")
+
 
 def cmd_list_raw(args):
     store = Store()
@@ -617,6 +733,7 @@ def main():
     p_ingest.add_argument("--explore", action="store_true", help="Follow relevant same-site links for web URLs")
     p_ingest.add_argument("--depth", type=int, choices=[0, 1, 2, 3], default=1, help="Web exploration depth (default: 1)")
     p_ingest.add_argument("--max-pages", type=int, default=8, help="Maximum web pages per starting URL (default: 8, hard cap: 40)")
+    p_ingest.add_argument("--workspace", "-w", default=None, help="Target workspace for ingested concepts (defaults to active workspace)")
     p_ingest.add_argument("--json", action="store_true", help="Output JSON format")
 
     # Search
@@ -628,6 +745,7 @@ def main():
         default="hybrid",
         help="Search mode: hybrid (RRF), semantic (Vector), keyword (FTS5), graph/hipporag (Personalized PageRank)"
     )
+    p_search.add_argument("--workspace", "-w", default="auto", help="Workspace filter: 'auto' (vector routing), 'all' (all workspaces), or specific ID")
     p_search.add_argument("--limit", type=int, default=5, help="Max results")
     p_search.add_argument("--caller", default="cli", help="Caller identity for logging (e.g. skill, cli, app)")
     p_search.add_argument("--json", action="store_true", help="Output JSON format")
@@ -671,9 +789,41 @@ def main():
     p_graph_data = subparsers.add_parser("graph-data", help="Export full nodes and edges in JSON")
     p_graph_data.add_argument("--pretty", action="store_true", help="Pretty print JSON")
 
+    # Workspace
+    p_ws = subparsers.add_parser("workspace", help="Manage multi-workspace knowledge domains and semantic routing")
+    ws_sub = p_ws.add_subparsers(dest="ws_action", required=True)
+
+    p_ws_list = ws_sub.add_parser("list", help="List all workspaces")
+    p_ws_list.add_argument("--json", action="store_true", help="Output JSON format")
+
+    p_ws_create = ws_sub.add_parser("create", help="Create a new workspace")
+    p_ws_create.add_argument("id", help="Workspace ID (alphanumeric and underscores)")
+    p_ws_create.add_argument("--name", help="Display name for workspace")
+    p_ws_create.add_argument("--desc", help="Description of workspace knowledge domain")
+    p_ws_create.add_argument("--json", action="store_true", help="Output JSON format")
+
+    p_ws_use = ws_sub.add_parser("use", help="Set active default workspace")
+    p_ws_use.add_argument("id", help="Workspace ID to activate")
+    p_ws_use.add_argument("--json", action="store_true", help="Output JSON format")
+
+    p_ws_cur = ws_sub.add_parser("current", help="Show currently active workspace")
+    p_ws_cur.add_argument("--json", action="store_true", help="Output JSON format")
+
+    p_ws_del = ws_sub.add_parser("delete", help="Delete a workspace")
+    p_ws_del.add_argument("id", help="Workspace ID to delete")
+    p_ws_del.add_argument("--json", action="store_true", help="Output JSON format")
+
+    p_ws_sync = ws_sub.add_parser("sync", help="Sync representative centroid vectors of all workspaces")
+    p_ws_sync.add_argument("--json", action="store_true", help="Output JSON format")
+
+    p_ws_route = ws_sub.add_parser("route", help="Test semantic routing for a query against workspaces")
+    p_ws_route.add_argument("query", help="Query string to route")
+    p_ws_route.add_argument("--json", action="store_true", help="Output JSON format")
+
     # List concepts
     p_list_c = subparsers.add_parser("list-concepts", help="List all concepts")
     p_list_c.add_argument("--limit", type=int, default=100, help="Max items")
+    p_list_c.add_argument("--workspace", "-w", default=None, help="Filter by workspace ID or 'all'")
     p_list_c.add_argument("--json", action="store_true", help="Output JSON format")
 
     # List raw documents
@@ -688,6 +838,7 @@ def main():
 
     # Stats
     p_stats = subparsers.add_parser("stats", help="Show warehouse statistics")
+    p_stats.add_argument("--workspace", "-w", default=None, help="Scope statistics to workspace")
     p_stats.add_argument("--json", action="store_true", help="Output JSON format")
 
     # Check-env
@@ -741,6 +892,8 @@ def main():
         cmd_graph(args)
     elif args.command == "graph-data":
         cmd_graph_data(args)
+    elif args.command == "workspace":
+        cmd_workspace(args)
     elif args.command == "list-concepts":
         cmd_list_concepts(args)
     elif args.command == "list-raw":
@@ -763,6 +916,7 @@ def main():
         cmd_stats(args)
     elif args.command == "serve-mcp":
         cmd_serve_mcp(args)
+
 
 if __name__ == "__main__":
     main()

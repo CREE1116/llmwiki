@@ -8,11 +8,25 @@ from datetime import datetime
 import json
 
 @dataclass
+class Workspace:
+    """Workspace domain partition for clustering related concepts and sources."""
+    id: str                                  # Unique slug, e.g. "ml_systems", "type_moon"
+    name: str                                # Human readable title
+    description: str = ""                    # High-density summary of domain topics
+    tags: List[str] = field(default_factory=list)
+    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
+    updated_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
+    concept_count: int = 0
+    raw_count: int = 0
+
+
+@dataclass
 class Relation:
     """Directed knowledge relation between two concepts."""
     type: str               # e.g., 'improves', 'solves', 'requires', 'component_of', 'variant_of'
     target: str             # concept_id of target
     reason: str = ""        # Dense explanation of the relationship
+
 
 @dataclass
 class Concept:
@@ -28,6 +42,7 @@ class Concept:
     tradeoffs: Dict[str, List[str]] = field(default_factory=lambda: {"pros": [], "cons": []})
     formulas_or_code: List[str] = field(default_factory=list) # Key math or code
     sources: List[str] = field(default_factory=list) # URL, PDF file path or title
+    workspace: str = "default"               # Workspace domain isolation
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
     updated_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
 
@@ -40,11 +55,13 @@ class Concept:
             "aliases": self.aliases,
             "type": self.type,
             "tags": self.tags,
+            "workspace": self.workspace,
             "relations": [asdict(r) for r in self.relations],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "sources": self.sources
         }
+
         fm_str = yaml.dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
 
         lines = [f"---\n{fm_str}\n---", f"\n# {self.name}\n"]
@@ -160,6 +177,7 @@ class Concept:
             tradeoffs=tradeoffs,
             formulas_or_code=formulas_or_code,
             sources=fm.get("sources", []),
+            workspace=fm.get("workspace", "default"),
             created_at=fm.get("created_at", ""),
             updated_at=fm.get("updated_at", "")
         )
@@ -175,3 +193,5 @@ class SearchResult:
     tags: List[str]
     score: float
     matched_by: str  # 'fts' or 'relation' or 'tag'
+    workspace: str = "default"
+

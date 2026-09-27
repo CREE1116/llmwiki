@@ -161,14 +161,14 @@ class VectorIndex:
         self.invalidate_cache()
 
     def _ensure_cache(self):
-        """Load and cache all concept vectors in memory as a contiguous NumPy matrix."""
+        """Load and cache all concept vectors in memory as a contiguous NumPy matrix with workspace metadata."""
         if self._cache_valid and self._cached_matrix is not None:
             return
 
         import json
         with self.db.get_connection() as conn:
             cursor = conn.execute("""
-            SELECT cv.concept_id, cv.vector, cv.dim, c.name, c.type, c.summary, c.tags_json
+            SELECT cv.concept_id, cv.vector, cv.dim, c.name, c.type, c.summary, c.tags_json, c.workspace_id
             FROM concept_vectors cv
             JOIN concepts c ON cv.concept_id = c.id
             """)
@@ -192,11 +192,13 @@ class VectorIndex:
             arr = np.frombuffer(blob, dtype=np.float32)
             ids.append(r["concept_id"])
             dims.append(dim)
+            ws = r["workspace_id"] if "workspace_id" in r.keys() else "default"
             meta.append({
                 "name": r["name"],
                 "type": r["type"],
                 "summary": r["summary"] or "",
-                "tags": json.loads(r["tags_json"]) if r["tags_json"] else []
+                "tags": json.loads(r["tags_json"]) if r["tags_json"] else [],
+                "workspace": ws or "default"
             })
             vecs.append(arr)
 
@@ -210,7 +212,8 @@ class VectorIndex:
         self,
         target_vec: np.ndarray,
         exclude_ids: Optional[Any] = None,
-        top_k: int = 5
+        top_k: int = 5,
+        workspace: str = "all"
     ) -> List[Tuple[str, float]]:
         """
         Find most similar existing concepts for a given vector.
@@ -223,10 +226,10 @@ class VectorIndex:
         ex_set = set(exclude_ids or []) if isinstance(exclude_ids, (list, set, tuple)) else ({exclude_ids} if exclude_ids else set())
         target_dim = len(target_vec)
 
-        # Filter matching dimensions
+        # Filter matching dimensions and workspace
         valid_indices = [
-            i for i, (cid, dim) in enumerate(zip(self._cached_ids, self._cached_dims))
-            if cid not in ex_set and dim == target_dim
+            i for i, (cid, dim, m) in enumerate(zip(self._cached_ids, self._cached_dims, self._cached_meta))
+            if cid not in ex_set and dim == target_dim and (not workspace or workspace == "all" or m.get("workspace") == workspace)
         ]
         if not valid_indices:
             return []
@@ -241,8 +244,8 @@ class VectorIndex:
             results.append((self._cached_ids[orig_i], float(scores[idx])))
         return results
 
-    def search_semantic(self, query: str, top_k: int = 5) -> List[SearchResult]:
-        """Sub-millisecond cosine similarity search over concept vectors."""
+    def search_semantic(self, query: str, top_k: int = 5, workspace: str = "all") -> List[SearchResult]:
+        """Sub-millisecond cosine similarity search over concept vectors with workspace filtering."""
         if not query.strip():
             return []
 
@@ -254,8 +257,8 @@ class VectorIndex:
 
         q_dim = len(q_vec)
         valid_indices = [
-            i for i, dim in enumerate(self._cached_dims)
-            if dim == q_dim
+            i for i, (dim, m) in enumerate(zip(self._cached_dims, self._cached_meta))
+            if dim == q_dim and (not workspace or workspace == "all" or m.get("workspace") == workspace)
         ]
         if not valid_indices:
             return []
@@ -277,7 +280,8 @@ class VectorIndex:
                 summary=m["summary"],
                 tags=m["tags"],
                 score=round(float(scores[idx]), 4),
-                matched_by="vector"
+                matched_by="vector",
+                workspace=m.get("workspace", "default")
             ))
         return results
 
@@ -287,25 +291,22 @@ class VectorIndex:
         top_k: int = 5,
         alpha: float = 0.5,
         method: str = "rrf",
-        rrf_k: int = 60
+        rrf_k: int = 60,
+        workspace: str = "all"
     ) -> List[SearchResult]:
         """
         High-performance Hybrid Search combining:
         - Layer 3 Vector Cosine Similarity (Semantic)
         - SQLite FTS5 BM25 (Exact keywords/aliases)
-
-        Fusion methods:
-        - 'rrf' (default): Reciprocal Rank Fusion, robust against score scale mismatches.
-        - 'linear': Normalized score combination: (1 - alpha) * fts + alpha * vec.
+        Optionally filtered by workspace domain.
         """
         candidate_k = max(top_k * 3, 20)
-        fts_hits = self.db.search(query, limit=candidate_k)
-        vec_hits = self.search_semantic(query, top_k=candidate_k)
+        fts_hits = self.db.search(query, limit=candidate_k, workspace=workspace)
+        vec_hits = self.search_semantic(query, top_k=candidate_k, workspace=workspace)
 
         if not fts_hits and not vec_hits:
             return []
 
-        # Store metadata for all seen concepts
         meta_pool: Dict[str, SearchResult] = {}
         for h in fts_hits:
             meta_pool[h.concept_id] = h
@@ -314,15 +315,12 @@ class VectorIndex:
                 meta_pool[v.concept_id] = v
 
         if method == "rrf":
-            # Reciprocal Rank Fusion: 1 / (k + rank)
             rrf_scores: Dict[str, float] = {}
 
-            # FTS5 ranks (1-indexed)
-            w_fts = (1.0 - alpha) * 2.0  # Normalized weight scale
+            w_fts = (1.0 - alpha) * 2.0
             for rank, h in enumerate(fts_hits, 1):
                 rrf_scores[h.concept_id] = rrf_scores.get(h.concept_id, 0.0) + (w_fts / (rrf_k + rank))
 
-            # Vector ranks (1-indexed)
             w_vec = alpha * 2.0
             for rank, v in enumerate(vec_hits, 1):
                 rrf_scores[v.concept_id] = rrf_scores.get(v.concept_id, 0.0) + (w_vec / (rrf_k + rank))
@@ -337,16 +335,14 @@ class VectorIndex:
                     type=base.type,
                     summary=base.summary,
                     tags=base.tags,
-                    score=round(rrf_scores[cid] * 100.0, 4),  # Scale for readable presentation
-                    matched_by="hybrid_rrf"
+                    score=round(rrf_scores[cid] * 100.0, 4),
+                    matched_by="hybrid_rrf",
+                    workspace=base.workspace
                 ))
             return results
 
         else:
-            # Linear combination with normalized scores
             combined: Dict[str, Dict[str, Any]] = {}
-
-            # FTS5 score is already positive (higher is better) from db.search
             fts_scores = [h.score for h in fts_hits]
             max_fts = max(fts_scores, default=1.0)
             min_fts = min(fts_scores, default=0.0)
@@ -387,9 +383,110 @@ class VectorIndex:
                     summary=h.summary,
                     tags=h.tags,
                     score=round(score, 4),
-                    matched_by="hybrid_linear"
+                    matched_by="hybrid_linear",
+                    workspace=h.workspace
                 ))
 
             final_list.sort(key=lambda x: x.score, reverse=True)
             return final_list[:top_k]
+
+    def sync_workspace_vector(self, workspace_id: str):
+        """
+        Compute and store the representative semantic centroid vector for a workspace.
+        Combines the workspace name + description embedding with the centroid of its member concepts.
+        """
+        ws = self.db.get_workspace(workspace_id)
+        if not ws:
+            return
+
+        desc_text = f"{ws.name}\n{ws.description}\n{' '.join(ws.tags)}"
+        desc_vec, _ = self.embed_text(desc_text)
+
+        with self.db.get_connection() as conn:
+            rows = conn.execute("""
+            SELECT cv.vector, cv.dim FROM concept_vectors cv
+            JOIN concepts c ON cv.concept_id = c.id
+            WHERE c.workspace_id = ?
+            """, (workspace_id,)).fetchall()
+
+        concept_vecs = []
+        for r in rows:
+            if r["dim"] == len(desc_vec):
+                concept_vecs.append(np.frombuffer(r["vector"], dtype=np.float32))
+
+        if concept_vecs:
+            member_centroid = np.mean(concept_vecs, axis=0)
+            member_norm = np.linalg.norm(member_centroid)
+            if member_norm > 0:
+                member_centroid /= member_norm
+            final_vec = 0.5 * desc_vec + 0.5 * member_centroid
+        else:
+            final_vec = desc_vec
+
+        norm = np.linalg.norm(final_vec)
+        if norm > 0:
+            final_vec /= norm
+
+        self.db.update_workspace_vector(workspace_id, final_vec.astype(np.float32).tobytes(), len(final_vec))
+
+    def sync_all_workspace_vectors(self):
+        """Re-sync centroid vectors for all registered workspaces."""
+        workspaces = self.db.list_workspaces()
+        for w in workspaces:
+            self.sync_workspace_vector(w.id)
+
+    def route_workspaces(self, query: str, top_k: int = 3) -> List[Tuple[str, float]]:
+        """
+        Rank all workspaces by cosine similarity with the query.
+        Returns sorted list of (workspace_id, similarity_score).
+        """
+        if not query.strip():
+            return [("default", 1.0)]
+
+        q_vec, _ = self.embed_text(query)
+        ws_list = self.db.get_workspace_vectors()
+
+        # If no workspace vectors yet, auto-sync
+        if not ws_list:
+            self.sync_all_workspace_vectors()
+            ws_list = self.db.get_workspace_vectors()
+
+        if not ws_list:
+            return [("default", 1.0)]
+
+        results = []
+        for item in ws_list:
+            ws_id = item["id"]
+            dim = item["dim"]
+            if dim != len(q_vec):
+                continue
+            arr = np.frombuffer(item["vector"], dtype=np.float32)
+            sim = float(np.dot(arr, q_vec))
+            results.append((ws_id, sim))
+
+        if not results:
+            return [("default", 1.0)]
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
+
+    def route_query(self, query: str) -> Tuple[Optional[str], float]:
+        """
+        Semantic Workspace Routing:
+        Finds the single best-fitting workspace for a query.
+        Returns (best_workspace_id, score).
+        If only one workspace exists (e.g. 'default'), returns (None, 1.0) so search remains global.
+        """
+        all_ws = self.db.list_workspaces()
+        if len(all_ws) <= 1:
+            return None, 1.0
+
+        ranked = self.route_workspaces(query, top_k=1)
+        if not ranked:
+            return None, 0.0
+
+        best_id, best_score = ranked[0]
+        return best_id, best_score
+
+
 

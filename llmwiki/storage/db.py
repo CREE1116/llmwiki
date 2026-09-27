@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
-from .models import Concept, Relation, SearchResult
+from .models import Concept, Relation, SearchResult, Workspace
 from ..config import DB_PATH
 
 class Database:
@@ -28,8 +28,28 @@ class Database:
 
 
     def _init_db(self):
-        """Initialize relational schema and FTS5 full text search table."""
+        """Initialize relational schema, workspaces, and FTS5 full text search table."""
         with self.get_connection() as conn:
+            # 0. Workspaces table
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                tags_json TEXT,
+                vector BLOB,
+                dim INTEGER,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """)
+
+            # Ensure default workspace exists
+            conn.execute("""
+            INSERT OR IGNORE INTO workspaces (id, name, description, tags_json, created_at, updated_at)
+            VALUES ('default', 'Default', 'Default general knowledge repository', '[]', datetime('now'), datetime('now'))
+            """)
+
             # 1. Concepts table
             conn.execute("""
             CREATE TABLE IF NOT EXISTS concepts (
@@ -39,10 +59,18 @@ class Database:
                 summary TEXT,
                 aliases_json TEXT,
                 tags_json TEXT,
+                workspace_id TEXT DEFAULT 'default',
                 created_at TEXT,
                 updated_at TEXT
             )
             """)
+
+            # Migration: Add workspace_id to concepts if upgraded from older version
+            cur = conn.execute("PRAGMA table_info(concepts)")
+            cols = [r["name"] for r in cur.fetchall()]
+            if "workspace_id" not in cols:
+                conn.execute("ALTER TABLE concepts ADD COLUMN workspace_id TEXT DEFAULT 'default'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_concepts_ws ON concepts(workspace_id)")
 
             # 2. Relations table (Knowledge Graph Edges)
             conn.execute("""
@@ -65,9 +93,17 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 concept_id TEXT NOT NULL,
                 source_uri TEXT NOT NULL,
+                workspace_id TEXT DEFAULT 'default',
                 FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE CASCADE
             )
             """)
+
+            # Migration: Add workspace_id to sources if upgraded
+            cur_s = conn.execute("PRAGMA table_info(sources)")
+            cols_s = [r["name"] for r in cur_s.fetchall()]
+            if "workspace_id" not in cols_s:
+                conn.execute("ALTER TABLE sources ADD COLUMN workspace_id TEXT DEFAULT 'default'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_ws ON sources(workspace_id)")
 
             # 4. FTS5 Virtual Table for Sub-millisecond Full-Text Search
             conn.execute("""
@@ -91,23 +127,33 @@ class Database:
                 action TEXT NOT NULL,
                 query TEXT,
                 details_json TEXT,
-                result_count INTEGER DEFAULT 0
+                result_count INTEGER DEFAULT 0,
+                workspace_id TEXT DEFAULT 'default'
             )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON query_logs(timestamp DESC)")
+
+            # Migration: Add workspace_id to query_logs if upgraded
+            cur_q = conn.execute("PRAGMA table_info(query_logs)")
+            cols_q = [r["name"] for r in cur_q.fetchall()]
+            if "workspace_id" not in cols_q:
+                conn.execute("ALTER TABLE query_logs ADD COLUMN workspace_id TEXT DEFAULT 'default'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_ws ON query_logs(workspace_id)")
             conn.commit()
 
+
     def upsert_concept(self, concept: Concept, full_markdown: str):
-        """Index or update a concept and its edges."""
+        """Index or update a concept and its edges within its assigned workspace."""
+        ws_id = getattr(concept, "workspace", None) or "default"
         with self.get_connection() as conn:
             aliases_str = " ".join(concept.aliases)
             tags_str = " ".join(concept.tags)
 
-            # Insert/Replace in concepts table
+            # Insert/Replace in concepts table with workspace_id
             conn.execute("""
             INSERT OR REPLACE INTO concepts (
-                id, name, type, summary, aliases_json, tags_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                id, name, type, summary, aliases_json, tags_json, workspace_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 concept.id,
                 concept.name,
@@ -115,9 +161,11 @@ class Database:
                 concept.summary,
                 json.dumps(concept.aliases, ensure_ascii=False),
                 json.dumps(concept.tags, ensure_ascii=False),
+                ws_id,
                 concept.created_at,
                 concept.updated_at
             ))
+
 
             # Delete old relations and re-insert
             conn.execute("DELETE FROM relations WHERE source_id = ?", (concept.id,))
@@ -148,8 +196,100 @@ class Database:
             ))
             conn.commit()
 
-    def search(self, query: str, limit: int = 5) -> List[SearchResult]:
-        """Perform high-speed FTS5 full-text search with BM25 rank."""
+    def create_workspace(self, ws_id: str, name: str, description: str = "", tags: Optional[List[str]] = None) -> Workspace:
+        clean_id = re.sub(r"[^\w-]", "_", ws_id.strip().lower())
+        tags_json = json.dumps(tags or [], ensure_ascii=False)
+        with self.get_connection() as conn:
+            conn.execute("""
+            INSERT OR REPLACE INTO workspaces (id, name, description, tags_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+            """, (clean_id, name.strip(), description.strip(), tags_json))
+            conn.commit()
+        ws = self.get_workspace(clean_id)
+        if not ws:
+            raise RuntimeError(f"Failed to create workspace '{clean_id}'")
+        return ws
+
+    def get_workspace(self, ws_id: str) -> Optional[Workspace]:
+        with self.get_connection() as conn:
+            row = conn.execute("""
+            SELECT w.*, 
+                   (SELECT COUNT(*) FROM concepts WHERE workspace_id = w.id) as concept_count,
+                   (SELECT COUNT(*) FROM sources WHERE workspace_id = w.id) as raw_count
+            FROM workspaces w WHERE w.id = ?
+            """, (ws_id,)).fetchone()
+            if not row:
+                return None
+            return Workspace(
+                id=row["id"],
+                name=row["name"],
+                description=row["description"] or "",
+                tags=json.loads(row["tags_json"]) if row["tags_json"] else [],
+                created_at=row["created_at"] or "",
+                updated_at=row["updated_at"] or "",
+                concept_count=row["concept_count"],
+                raw_count=row["raw_count"]
+            )
+
+    def list_workspaces(self) -> List[Workspace]:
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+            SELECT w.*, 
+                   (SELECT COUNT(*) FROM concepts WHERE workspace_id = w.id) as concept_count,
+                   (SELECT COUNT(*) FROM sources WHERE workspace_id = w.id) as raw_count
+            FROM workspaces w ORDER BY w.id ASC
+            """).fetchall()
+            return [
+                Workspace(
+                    id=r["id"],
+                    name=r["name"],
+                    description=r["description"] or "",
+                    tags=json.loads(r["tags_json"]) if r["tags_json"] else [],
+                    created_at=r["created_at"] or "",
+                    updated_at=r["updated_at"] or "",
+                    concept_count=r["concept_count"],
+                    raw_count=r["raw_count"]
+                )
+                for r in rows
+            ]
+
+    def delete_workspace(self, ws_id: str) -> bool:
+        if ws_id == "default":
+            return False  # Cannot delete default workspace
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM workspaces WHERE id = ?", (ws_id,))
+            conn.execute("UPDATE concepts SET workspace_id = 'default' WHERE workspace_id = ?", (ws_id,))
+            conn.execute("UPDATE sources SET workspace_id = 'default' WHERE workspace_id = ?", (ws_id,))
+            conn.commit()
+            return True
+
+    def update_workspace_vector(self, ws_id: str, vector: bytes, dim: int):
+        with self.get_connection() as conn:
+            conn.execute("""
+            UPDATE workspaces SET vector = ?, dim = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """, (vector, dim, ws_id))
+            conn.commit()
+
+    def get_workspace_vectors(self) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute("""
+            SELECT id, name, description, vector, dim FROM workspaces
+            WHERE vector IS NOT NULL
+            """).fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "description": r["description"] or "",
+                    "vector": r["vector"],
+                    "dim": r["dim"]
+                }
+                for r in rows
+            ]
+
+    def search(self, query: str, limit: int = 5, workspace: str = "all") -> List[SearchResult]:
+        """Perform high-speed FTS5 full-text search with BM25 rank, optionally filtered by workspace."""
         if not query.strip():
             return []
 
@@ -170,35 +310,58 @@ class Database:
 
         with self.get_connection() as conn:
             try:
-                cursor = conn.execute("""
-                SELECT
-                    c.id, c.name, c.type, c.summary, c.tags_json,
-                    bm25(concepts_fts, 10.0, 5.0, 3.0, 2.0, 1.0) AS score
-                FROM concepts_fts
-                JOIN concepts c ON concepts_fts.id = c.id
-                WHERE concepts_fts MATCH ?
-                ORDER BY score ASC
-                LIMIT ?
-                """, (fts_query, limit))
+                if workspace and workspace != "all":
+                    sql = """
+                    SELECT
+                        c.id, c.name, c.type, c.summary, c.tags_json, c.workspace_id,
+                        bm25(concepts_fts, 10.0, 5.0, 3.0, 2.0, 1.0) AS score
+                    FROM concepts_fts
+                    JOIN concepts c ON concepts_fts.id = c.id
+                    WHERE concepts_fts MATCH ? AND c.workspace_id = ?
+                    ORDER BY score ASC
+                    LIMIT ?
+                    """
+                    cursor = conn.execute(sql, (fts_query, workspace, limit))
+                else:
+                    sql = """
+                    SELECT
+                        c.id, c.name, c.type, c.summary, c.tags_json, c.workspace_id,
+                        bm25(concepts_fts, 10.0, 5.0, 3.0, 2.0, 1.0) AS score
+                    FROM concepts_fts
+                    JOIN concepts c ON concepts_fts.id = c.id
+                    WHERE concepts_fts MATCH ?
+                    ORDER BY score ASC
+                    LIMIT ?
+                    """
+                    cursor = conn.execute(sql, (fts_query, limit))
 
                 rows = cursor.fetchall()
             except sqlite3.OperationalError:
                 # Fallback to simple LIKE search if FTS query syntax error occurs
-                cursor = conn.execute("""
-                SELECT id, name, type, summary, tags_json, -1.0 as score
-                FROM concepts
-                WHERE name LIKE ? OR summary LIKE ? OR id LIKE ?
-                LIMIT ?
-                """, (f"%{query}%", f"%{query}%", f"%{query}%", limit))
+                if workspace and workspace != "all":
+                    sql = """
+                    SELECT id, name, type, summary, tags_json, workspace_id, -1.0 as score
+                    FROM concepts
+                    WHERE (name LIKE ? OR summary LIKE ? OR id LIKE ?) AND workspace_id = ?
+                    LIMIT ?
+                    """
+                    cursor = conn.execute(sql, (f"%{query}%", f"%{query}%", f"%{query}%", workspace, limit))
+                else:
+                    sql = """
+                    SELECT id, name, type, summary, tags_json, workspace_id, -1.0 as score
+                    FROM concepts
+                    WHERE name LIKE ? OR summary LIKE ? OR id LIKE ?
+                    LIMIT ?
+                    """
+                    cursor = conn.execute(sql, (f"%{query}%", f"%{query}%", f"%{query}%", limit))
                 rows = cursor.fetchall()
 
             results = []
             for row in rows:
                 tags = json.loads(row["tags_json"]) if row["tags_json"] else []
-                # SQLite bm25 returns negative values where lower (more negative) is better.
-                # Invert to positive so higher is better for standard search scoring.
                 raw_bm25 = float(row["score"])
                 pos_score = max(0.01, -raw_bm25) if raw_bm25 < 0 else 0.5
+                ws = row["workspace_id"] if "workspace_id" in row.keys() else "default"
                 results.append(SearchResult(
                     concept_id=row["id"],
                     name=row["name"],
@@ -206,9 +369,11 @@ class Database:
                     summary=row["summary"] or "",
                     tags=tags,
                     score=round(pos_score, 4),
-                    matched_by="fts"
+                    matched_by="fts",
+                    workspace=ws or "default"
                 ))
             return results
+
 
 
     def get_concept(self, concept_id: str) -> Optional[Dict[str, Any]]:
@@ -232,11 +397,15 @@ class Database:
             """, (concept_id, concept_id))
             return [dict(r) for r in cursor.fetchall()]
 
-    def list_all_ids(self) -> List[str]:
-        """List all concept IDs in the store."""
+    def list_all_ids(self, workspace: Optional[str] = None) -> List[str]:
+        """List all concept IDs in the store, optionally filtered by workspace."""
         with self.get_connection() as conn:
-            cursor = conn.execute("SELECT id FROM concepts ORDER BY id ASC")
+            if workspace and workspace != "all":
+                cursor = conn.execute("SELECT id FROM concepts WHERE workspace_id = ? ORDER BY id ASC", (workspace,))
+            else:
+                cursor = conn.execute("SELECT id FROM concepts ORDER BY id ASC")
             return [r["id"] for r in cursor.fetchall()]
+
 
     def prune_concepts(self, valid_ids: List[str]) -> None:
         """Remove index rows whose source concept file no longer exists."""
@@ -270,17 +439,19 @@ class Database:
             conn.commit()
             return True
 
-    def log_query(self, caller: str, action: str, query: str, details: Any = None, result_count: int = 0):
+    def log_query(self, caller: str, action: str, query: str, details: Any = None, result_count: int = 0, workspace: str = "default"):
         """Record an agent or user retrieval/action event."""
         import datetime
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         details_str = json.dumps(details, ensure_ascii=False) if details else ""
+        ws_id = workspace or "default"
         with self.get_connection() as conn:
             conn.execute("""
-            INSERT INTO query_logs (timestamp, caller, action, query, details_json, result_count)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """, (now, caller, action, query, details_str, result_count))
+            INSERT INTO query_logs (timestamp, caller, action, query, details_json, result_count, workspace_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (now, caller, action, query, details_str, result_count, ws_id))
             conn.commit()
+
 
     def get_query_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Retrieve recent query audit logs."""
@@ -408,16 +579,34 @@ class Database:
 
             return {"nodes": nodes, "edges": edges}
 
-    def stats(self) -> Dict[str, Any]:
-        """Return counts of concepts, relations, sources, and query logs."""
+    def stats(self, workspace: Optional[str] = None) -> Dict[str, Any]:
+        """Return counts of concepts, relations, sources, and query logs, optionally for a workspace."""
         with self.get_connection() as conn:
-            c_count = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
-            r_count = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
-            s_count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-            l_count = conn.execute("SELECT COUNT(*) FROM query_logs").fetchone()[0]
+            if workspace and workspace != "all":
+                c_count = conn.execute("SELECT COUNT(*) FROM concepts WHERE workspace_id = ?", (workspace,)).fetchone()[0]
+                r_count = conn.execute("""
+                SELECT COUNT(*) FROM relations r
+                JOIN concepts c ON r.source_id = c.id
+                WHERE c.workspace_id = ?
+                """, (workspace,)).fetchone()[0]
+                s_count = conn.execute("SELECT COUNT(*) FROM sources WHERE workspace_id = ?", (workspace,)).fetchone()[0]
+                l_count = conn.execute("SELECT COUNT(*) FROM query_logs WHERE workspace_id = ?", (workspace,)).fetchone()[0]
+                ws = self.get_workspace(workspace)
+                ws_name = ws.name if ws else workspace
+            else:
+                c_count = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
+                r_count = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+                s_count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+                l_count = conn.execute("SELECT COUNT(*) FROM query_logs").fetchone()[0]
+                ws_name = "all"
+
+            w_count = conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0]
             return {
+                "workspace": ws_name,
+                "total_workspaces": w_count,
                 "total_concepts": c_count,
                 "total_relations": r_count,
                 "total_sources": s_count,
                 "total_queries": l_count
             }
+

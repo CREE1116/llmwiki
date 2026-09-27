@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "model": "gemma2:9b",
     "ollama_host": "http://localhost:11434",
     "api_key": "",
+    "active_workspace": "default",
     "installed_skills": {
         "antigravity": True,
         "claude": False,
@@ -69,8 +70,25 @@ def save_config(updates: dict) -> dict:
     CONFIG_PATH.write_text(json.dumps(current, indent=2, ensure_ascii=False), encoding="utf-8")
     return current
 
+
+def get_active_workspace() -> str:
+    """Get active workspace ID from env var or config, defaulting to 'default'."""
+    env_ws = os.environ.get("LLMWIKI_WORKSPACE")
+    if env_ws and env_ws.strip():
+        return env_ws.strip()
+    cfg = load_config()
+    return cfg.get("active_workspace", "default") or "default"
+
+
+def set_active_workspace(workspace_id: str) -> str:
+    """Set and persist active workspace ID."""
+    clean_id = workspace_id.strip()
+    save_config({"active_workspace": clean_id})
+    return clean_id
+
 # Active configuration values
 _CFG = load_config()
 OLLAMA_HOST = _CFG.get("ollama_host", "http://localhost:11434")
 DEFAULT_MODEL = _CFG.get("model", "gemma2:9b")
 FALLBACK_MODELS = ["gemma2:2b", "gemma:7b", "gemma:2b", "llama3.2:3b", "qwen2.5:7b"]
+

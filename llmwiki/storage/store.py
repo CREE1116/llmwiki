@@ -7,24 +7,27 @@ Integrated 3-Layer Knowledge Store:
 import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
-from .models import Concept, SearchResult
+from .models import Concept, SearchResult, Workspace
 from .db import Database
 from .raw_store import RawStore
 from .vector_index import VectorIndex
-from ..config import CONCEPTS_DIR, RAW_DIR
+from ..config import CONCEPTS_DIR, RAW_DIR, get_active_workspace
 
 class Store:
     def __init__(
         self,
         concepts_dir: Path = CONCEPTS_DIR,
         raw_dir: Path = RAW_DIR,
-        db: Optional[Database] = None
+        db: Optional[Database] = None,
+        workspace: Optional[str] = None
     ):
         self.concepts_dir = concepts_dir
         self.concepts_dir.mkdir(parents=True, exist_ok=True)
         self.db = db or Database()
         self.raw = RawStore(raw_dir=raw_dir, db=self.db)
         self.vectors = VectorIndex(db=self.db)
+        self.workspace = workspace if workspace is not None else get_active_workspace()
+
 
     def _file_path(self, concept_id: str) -> Path:
         clean_id = concept_id.strip().lower().replace(" ", "_").replace("/", "_")
@@ -35,6 +38,9 @@ class Store:
         Write concept to Layer 2 (markdown + SQLite FTS5)
         and Layer 3 (Vector semantic index).
         """
+        if not concept.workspace:
+            concept.workspace = self.workspace or "default"
+
         path = self._file_path(concept.id)
         md_content = concept.to_markdown()
         path.write_text(md_content, encoding="utf-8")
@@ -45,6 +51,7 @@ class Store:
         # Sync to Layer 3 Vector Index
         try:
             self.vectors.index_concept(concept)
+            self.vectors.sync_workspace_vector(concept.workspace)
         except Exception as e:
             # Vector indexing should not block concept save
             import sys
@@ -69,6 +76,9 @@ class Store:
            -> NEW: Save as independent concept.
         Returns (final_concept, action_taken) where action_taken is 'merged', 'linked', or 'created'.
         """
+        if not concept.workspace:
+            concept.workspace = self.workspace or "default"
+
         # Exact ID match -> merge into existing
         existing = self.get_concept(concept.id)
         if existing:
@@ -82,6 +92,8 @@ class Store:
             for r in concept.relations:
                 if r.target != existing.id and not any(er.target == r.target and er.type == r.type for er in existing.relations):
                     existing.relations.append(r)
+            if concept.workspace and existing.workspace == "default":
+                existing.workspace = concept.workspace
             self.save_concept(existing)
             return existing, "merged"
 
@@ -114,6 +126,8 @@ class Store:
                 for r in concept.relations:
                     if r.target != target_concept.id and not any(er.target == r.target and er.type == r.type for er in target_concept.relations):
                         target_concept.relations.append(r)
+                if concept.workspace and target_concept.workspace == "default":
+                    target_concept.workspace = concept.workspace
                 self.save_concept(target_concept)
                 return target_concept, "merged"
 
@@ -150,9 +164,11 @@ class Store:
     def exists(self, concept_id: str) -> bool:
         return self._file_path(concept_id).exists()
 
-    def list_concepts(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """List concepts with their metadata."""
-        ids = self.db.list_all_ids()[:limit]
+    def list_concepts(self, limit: int = 50, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List concepts with their metadata, optionally filtered by workspace."""
+        target_ws = workspace if workspace is not None else self.workspace
+        filter_ws = None if target_ws in ("all", "*") else target_ws
+        ids = self.db.list_all_ids(workspace=filter_ws)[:limit]
         results = []
         for cid in ids:
             c = self.get_concept(cid)
@@ -162,26 +178,48 @@ class Store:
                     "name": c.name,
                     "type": c.type,
                     "tags": c.tags,
-                    "summary": c.summary
+                    "summary": c.summary,
+                    "workspace": c.workspace
                 })
         return results
 
-    def search(self, query: str, mode: str = "hybrid", limit: int = 5) -> List[SearchResult]:
+    def search(
+        self,
+        query: str,
+        mode: str = "hybrid",
+        limit: int = 5,
+        workspace: Optional[str] = "auto"
+    ) -> List[SearchResult]:
         """
         Search across knowledge warehouse:
         - mode='hybrid': Layer 3 Vector + SQLite FTS5 (RRF fusion)
         - mode='graph' / 'hipporag': HippoRAG Personalized PageRank spreading activation over hybrid seeds
         - mode='vector' / 'semantic': Layer 3 Vector semantic search
         - mode='keyword' / 'fts': SQLite FTS5 BM25 search
+
+        Workspace options:
+        - 'auto': Automatically route query to most relevant workspace via vector similarity
+        - 'all' / None: Search across all workspaces without filtering
+        - '<workspace_id>': Scope search to specific workspace
         """
+        ws_filter: Optional[str] = None
+        if workspace == "auto":
+            routed_ws, route_score = self.vectors.route_query(query)
+            if routed_ws:
+                ws_filter = routed_ws
+        elif workspace in ("all", "*", None):
+            ws_filter = None
+        else:
+            ws_filter = workspace
+
         if mode in ("vector", "semantic"):
-            return self.vectors.search_semantic(query, top_k=limit)
+            return self.vectors.search_semantic(query, top_k=limit, workspace=ws_filter)
         elif mode in ("keyword", "fts"):
-            return self.db.search(query, limit=limit)
+            return self.db.search(query, limit=limit, workspace=ws_filter)
         elif mode in ("graph", "hipporag", "network"):
-            # HippoRAG: Multi-hop graph associative retrieval
+            # HippoRAG: Multi-hop graph associative retrieval with workspace scoping
             from .graph import KnowledgeGraph
-            initial_hits = self.vectors.hybrid_search(query, top_k=max(limit * 2, 8))
+            initial_hits = self.vectors.hybrid_search(query, top_k=max(limit * 2, 8), workspace=ws_filter)
             if not initial_hits:
                 return []
 
@@ -201,15 +239,15 @@ class Store:
                     continue
                 norm_ppr = ppr / max_ppr
                 seed_score = seed_weights.get(cid, 0.0)
-                # Weighted fusion: 60% direct semantic score + 40% graph topological association
                 final_score = 0.6 * seed_score + 0.4 * (norm_ppr * 100.0)
 
-                # Fetch concept metadata if not in seed hits
                 if cid in meta_map:
                     base = meta_map[cid]
                 else:
                     c = self.get_concept(cid)
                     if not c:
+                        continue
+                    if ws_filter and c.workspace != ws_filter:
                         continue
                     base = SearchResult(
                         concept_id=c.id,
@@ -218,7 +256,8 @@ class Store:
                         summary=c.summary,
                         tags=c.tags,
                         score=0.0,
-                        matched_by="graph_ppr"
+                        matched_by="graph_ppr",
+                        workspace=c.workspace
                     )
 
                 augmented.append(SearchResult(
@@ -228,13 +267,40 @@ class Store:
                     summary=base.summary,
                     tags=base.tags,
                     score=round(final_score, 4),
-                    matched_by="hipporag"
+                    matched_by="hipporag",
+                    workspace=base.workspace
                 ))
 
             augmented.sort(key=lambda x: x.score, reverse=True)
             return augmented[:limit]
         else:  # default hybrid
-            return self.vectors.hybrid_search(query, top_k=limit)
+            return self.vectors.hybrid_search(query, top_k=limit, workspace=ws_filter)
+
+    def create_workspace(self, workspace_id: str, name: str = "", description: str = "") -> Workspace:
+        """Create a new knowledge workspace."""
+        ws = self.db.create_workspace(workspace_id, name=name, description=description)
+        try:
+            self.vectors.sync_workspace_vector(ws.id)
+        except Exception:
+            pass
+        return ws
+
+    def get_workspace(self, workspace_id: str) -> Optional[Workspace]:
+        """Get workspace by ID."""
+        return self.db.get_workspace(workspace_id)
+
+    def list_workspaces(self) -> List[Workspace]:
+        """List all workspaces with metadata."""
+        return self.db.list_workspaces()
+
+    def delete_workspace(self, workspace_id: str) -> bool:
+        """Delete a workspace."""
+        return self.db.delete_workspace(workspace_id)
+
+    def route_workspace(self, query: str) -> Tuple[Optional[str], float]:
+        """Find the best-fitting workspace for a query using vector similarity."""
+        return self.vectors.route_query(query)
+
 
 
     def get_raw_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
@@ -307,4 +373,9 @@ class Store:
             except Exception as e:
                 print(f"Warning: Failed to index {md_file}: {e}")
         self.db.prune_concepts(valid_ids)
+        try:
+            self.vectors.sync_all_workspace_vectors()
+        except Exception as e:
+            print(f"Warning: Failed to sync workspace vectors: {e}")
         return count
+

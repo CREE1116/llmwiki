@@ -31,6 +31,12 @@ Base project path: `/Users/leejongmin/llmwiki`
 | Find knowledge bridge concepts | `python3 -m llmwiki graph --bridges` |
 | View LLM retrieval audit logs | `python3 -m llmwiki logs --limit 20` |
 | Ingest a new paper (PDF), file, or web URL | `python3 -m llmwiki ingest <file_path_or_url>` |
+| Ingest into specific workspace | `python3 -m llmwiki ingest <path_or_url> --workspace <ws_id>` |
+| Search with auto-routed workspace | `python3 -m llmwiki search "<query>" --workspace auto` |
+| Search specific workspace or all | `python3 -m llmwiki search "<query>" --workspace <ws_id_or_all>` |
+| List & switch workspaces | `python3 -m llmwiki workspace list` / `use <id>` |
+| Create isolated domain workspace | `python3 -m llmwiki workspace create <id> --name <name> --desc <desc>` |
+| Test semantic query routing | `python3 -m llmwiki workspace route "<query>"` |
 | Check warehouse & graph topology statistics | `python3 -m llmwiki stats` |
 | Launch Desktop App (Graph & Logs UI) | `/Users/leejongmin/llmwiki/bin/llmwiki-app` |
 
@@ -40,10 +46,20 @@ Base project path: `/Users/leejongmin/llmwiki`
 
 ---
 
-## 2. Typical Workflows
+## 2. Multi-Workspace & Semantic Routing
+
+LLMWiki supports isolated multi-domain workspaces (e.g., `ai_research`, `bio_med`, `work_internal`).
+- **Domain Centroid Vectors**: Each workspace maintains a representative semantic vector derived from its description and concept centroids.
+- **Automatic Routing (`--workspace auto`)**: When querying without explicit workspace scoping, LLMWiki calculates cosine similarity against workspace vectors and automatically routes queries to the most relevant knowledge domain.
+- **Explicit Scoping (`--workspace <id>`)**: Scope queries strictly to a chosen workspace.
+- **Global Search (`--workspace all`)**: Search across all workspaces without boundaries.
+
+---
+
+## 3. Typical Workflows
 
 ### A. Answering Questions Using Local Knowledge
-1. **Search**: Run `python3 -m llmwiki search "<user query>" --limit 3`.
+1. **Search**: Run `python3 -m llmwiki search "<user query>" --limit 3` (auto-routes to appropriate workspace).
 2. **Inspect**: If a match looks promising, run `python3 -m llmwiki get <concept_id> --neighbors`.
 3. **Verify (Optional)**: If exact math proofs, benchmark values, or raw code are needed, append `--raw` to inspect Layer 1 ground truth.
 4. **Answer**: Synthesize the answer using the high-density facts extracted.
@@ -51,9 +67,10 @@ Base project path: `/Users/leejongmin/llmwiki`
 ### B. Ingesting New Knowledge
 When the user shares a paper PDF, technical markdown file, or website link:
 ```bash
-python3 -m llmwiki ingest <path_or_url>
+python3 -m llmwiki ingest <path_or_url> [--workspace <ws_id>]
 ```
 The local engine will automatically:
 1. Archive full text into **Layer 1 (RawStore)**.
-2. Distill atomic concepts with summary, mechanisms, trade-offs, and relations into **Layer 2 (Markdown + SQLite FTS5)**.
-3. Synchronize vector embeddings into **Layer 3 (VectorIndex)**.
+2. Distill atomic concepts with summary, mechanisms, trade-offs, and relations into **Layer 2 (Markdown + SQLite FTS5)** scoped to the target workspace.
+3. Synchronize vector embeddings and update workspace centroid vectors into **Layer 3 (VectorIndex)**.
+

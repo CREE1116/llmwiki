@@ -23,7 +23,7 @@ class MCPServer:
         return [
             {
                 "name": "wiki_search",
-                "description": "Fast search across the local LLMWiki knowledge warehouse. Supports hybrid RRF, vector semantic, keyword, and HippoRAG graph spreading activation.",
+                "description": "Fast search across the local LLMWiki knowledge warehouse. Supports hybrid RRF, vector semantic, keyword, and HippoRAG graph spreading activation with automatic workspace routing.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -34,7 +34,12 @@ class MCPServer:
                             "default": "hybrid",
                             "description": "Search mode: hybrid (semantic vector + FTS5 with RRF), semantic (vector only), keyword (BM25 only), graph/hipporag (Personalized PageRank spreading activation)"
                         },
-                        "limit": {"type": "integer", "default": 5, "description": "Max results to return"}
+                        "limit": {"type": "integer", "default": 5, "description": "Max results to return"},
+                        "workspace": {
+                            "type": "string",
+                            "default": "auto",
+                            "description": "Workspace scope: 'auto' (semantic vector routing), 'all' (entire warehouse), or specific workspace ID"
+                        }
                     },
                     "required": ["query"]
                 }
@@ -105,12 +110,34 @@ class MCPServer:
             },
             {
                 "name": "wiki_list_concepts",
-                "description": "List all distilled concepts currently in the warehouse.",
+                "description": "List all distilled concepts currently in the warehouse, optionally filtered by workspace.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "default": 30, "description": "Maximum concepts to list"}
+                        "limit": {"type": "integer", "default": 30, "description": "Maximum concepts to list"},
+                        "workspace": {"type": "string", "description": "Workspace filter ID, or 'all'"}
                     }
+                }
+            },
+            {
+                "name": "wiki_list_workspaces",
+                "description": "List all isolated knowledge workspaces and domain categories with their concept counts.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "wiki_create_workspace",
+                "description": "Create a new isolated knowledge workspace domain.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "workspace_id": {"type": "string", "description": "Unique workspace ID"},
+                        "name": {"type": "string", "description": "Display name"},
+                        "description": {"type": "string", "description": "Domain scope description for automatic semantic routing"}
+                    },
+                    "required": ["workspace_id"]
                 }
             },
             {
@@ -119,19 +146,23 @@ class MCPServer:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "source": {"type": "string", "description": "File path or HTTP/HTTPS URL"}
+                        "source": {"type": "string", "description": "File path or HTTP/HTTPS URL"},
+                        "workspace": {"type": "string", "description": "Target workspace ID (defaults to active workspace)"}
                     },
                     "required": ["source"]
                 }
             },
             {
                 "name": "wiki_stats",
-                "description": "Return summary statistics of the knowledge warehouse (concept count, relation count, raw doc count).",
+                "description": "Return summary statistics of the knowledge warehouse (concept count, relation count, raw doc count, active workspace).",
                 "inputSchema": {
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "workspace": {"type": "string", "description": "Optional workspace filter"}
+                    }
                 }
             }
+
 
         ]
 
@@ -141,14 +172,18 @@ class MCPServer:
             query = args.get("query", "")
             mode = args.get("mode", "hybrid")
             limit = args.get("limit", 5)
-            hits = self.store.search(query=query, mode=mode, limit=limit)
+            ws = args.get("workspace", "auto")
+            hits = self.store.search(query=query, mode=mode, limit=limit, workspace=ws)
             if not hits:
-                return f"No concepts found matching '{query}'."
+                scope_str = f" in workspace '{ws}'" if ws and ws not in ("auto", "all") else ""
+                return f"No concepts found matching '{query}' (mode: {mode}{scope_str})."
 
-            output = [f"Found {len(hits)} matching concepts:"]
+            scope_note = f" (Workspace scope: {ws})" if ws else ""
+            output = [f"Found {len(hits)} matching concepts{scope_note}:"]
             for h in hits:
                 tags = f"[{', '.join(h.tags)}]" if h.tags else ""
-                output.append(f"\n- **ID**: `{h.concept_id}` ({h.name}) | Type: `{h.type}` {tags} [Score: {h.score}]")
+                ws_str = f" [Workspace: {h.workspace}]" if h.workspace else ""
+                output.append(f"\n- **ID**: `{h.concept_id}` ({h.name}) | Type: `{h.type}`{ws_str} {tags} [Score: {h.score}]")
                 output.append(f"  Summary: {h.summary}")
             return "\n".join(output)
 
@@ -257,35 +292,66 @@ class MCPServer:
                 )
 
         elif name == "wiki_list_concepts":
-
             limit = args.get("limit", 30)
-            concepts = self.store.list_concepts(limit=limit)
+            ws = args.get("workspace")
+            concepts = self.store.list_concepts(limit=limit, workspace=ws)
             if not concepts:
-                return "The knowledge warehouse is currently empty."
-            lines = [f"Total {len(concepts)} concepts:"]
+                ws_note = f" in workspace '{ws}'" if ws else ""
+                return f"No concepts found{ws_note}."
+            ws_note = f" [Workspace: {ws}]" if ws else ""
+            lines = [f"Total {len(concepts)} concepts{ws_note}:"]
             for c in concepts:
-                lines.append(f"- `{c['id']}`: {c['name']} [{c['type']}] - {c['summary'][:100]}...")
+                ws_badge = f" [{c.get('workspace', 'default')}]" if c.get("workspace") else ""
+                lines.append(f"- `{c['id']}`{ws_badge}: {c['name']} [{c['type']}] - {c['summary'][:100]}...")
             return "\n".join(lines)
+
+        elif name == "wiki_list_workspaces":
+            workspaces = self.store.list_workspaces()
+            if not workspaces:
+                return "No workspaces found."
+            lines = [f"Workspaces ({len(workspaces)} total):"]
+            for w in workspaces:
+                st = self.store.db.stats(workspace=w.id)
+                desc = f" - {w.description}" if w.description else ""
+                lines.append(f"- `{w.id}` ({w.name or 'Unnamed'}) [{st['total_concepts']} concepts]{desc}")
+            return "\n".join(lines)
+
+        elif name == "wiki_create_workspace":
+            ws_id = args.get("workspace_id", "").strip()
+            if not ws_id:
+                return "Error: 'workspace_id' is required."
+            ws = self.store.create_workspace(
+                workspace_id=ws_id,
+                name=args.get("name", ""),
+                description=args.get("description", "")
+            )
+            return f"Successfully created workspace `{ws.id}` ({ws.name or 'Unnamed'})."
 
         elif name == "wiki_ingest":
             source = args.get("source", "").strip()
+            ws = args.get("workspace")
+            target_store = Store(workspace=ws) if ws else self.store
+            target_distiller = Distiller(store=target_store) if ws else self.distiller
             try:
                 parsed = parse_source(source)
-                created = self.distiller.distill(
+                created = target_distiller.distill(
                     doc_title=parsed["title"],
                     text=parsed["text"],
                     source=parsed["source"]
                 )
                 self.graph.build_graph()
                 c_names = [f"`{c.id}` ({c.name})" for c in created]
-                return f"Successfully ingested '{parsed['title']}'. Distilled {len(created)} concepts: {', '.join(c_names)}"
+                ws_note = f" into workspace '{ws}'" if ws else ""
+                return f"Successfully ingested '{parsed['title']}'{ws_note}. Distilled {len(created)} concepts: {', '.join(c_names)}"
             except Exception as e:
                 return f"Ingestion failed: {e}\n{traceback.format_exc()}"
 
         elif name == "wiki_stats":
-            stats = self.store.db.stats()
+            ws = args.get("workspace")
+            stats = self.store.db.stats(workspace=ws)
+            ws_note = f" (Workspace: {ws})" if ws else ""
             return (
-                f"LLMWiki Statistics:\n"
+                f"LLMWiki Statistics{ws_note}:\n"
                 f"- Total Concepts (Layer 2): {stats['total_concepts']}\n"
                 f"- Total Knowledge Edges: {stats['total_relations']}\n"
                 f"- Total Raw Documents (Layer 1): {stats['total_sources']}"
@@ -294,6 +360,7 @@ class MCPServer:
         return f"Unknown tool: {name}"
 
     def run_stdio(self):
+
         """Standard MCP JSON-RPC 2.0 read-eval loop over stdin/stdout."""
         for line in sys.stdin:
             line = line.strip()
