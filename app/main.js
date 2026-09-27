@@ -1,11 +1,43 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile, spawn } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 
 let mainWindow;
 let activeIngestProcess = null;
+const allChildProcesses = new Set(); // tracks every spawned child for cleanup on quit
 const ROOT_DIR = path.resolve(__dirname, '..');
+
+// Detect the correct python3 binary once at startup (handles python3.14, etc.)
+// Electron apps often have a stripped PATH that lacks /opt/homebrew/bin, so we expand it.
+let resolvedPython3 = null;
+function getResolvedPython3() {
+  if (resolvedPython3) return resolvedPython3;
+  // Augment PATH with common Python/Homebrew install locations
+  const extraPaths = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/opt/homebrew/opt/python3/bin',
+    process.env.HOME ? `${process.env.HOME}/.pyenv/shims` : '',
+    process.env.HOME ? `${process.env.HOME}/.local/bin` : '',
+  ].filter(Boolean);
+  const augmentedPath = [...extraPaths, process.env.PATH || ''].join(':');
+
+  const candidates = ['python3', 'python3.14', 'python3.13', 'python3.12', 'python3.11', 'python'];
+  for (const candidate of candidates) {
+    try {
+      const out = execFileSync('which', [candidate], {
+        encoding: 'utf8',
+        timeout: 3000,
+        env: { ...process.env, PATH: augmentedPath }
+      }).trim();
+      if (out) { resolvedPython3 = out; console.log('[llmwiki] Python resolved to:', out); return resolvedPython3; }
+    } catch (e) { /* try next */ }
+  }
+  resolvedPython3 = 'python3';
+  return resolvedPython3;
+}
 
 function getPackagedCLIPath() {
   const binary = process.platform === 'win32' ? 'llmwiki.exe' : 'llmwiki';
@@ -25,29 +57,47 @@ function getCLIInvocation(args) {
     }
     return { command: cliPath, args };
   }
-  return { command: 'python3', args: ['-m', 'llmwiki', ...args] };
+  // Use auto-detected python3 path to handle python3.14, etc.
+  return { command: getResolvedPython3(), args: ['-m', 'llmwiki', ...args] };
+}
+
+function getCLIEnv(isPackaged) {
+  // Prepend common tool paths so python3, pip, etc. are reachable even when
+  // Electron strips the shell PATH (common on macOS app bundles).
+  const extraPaths = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ].join(':');
+  const augmentedPath = `${extraPaths}:${process.env.PATH || ''}`;
+  return {
+    ...process.env,
+    PATH: augmentedPath,
+    ...(isPackaged ? {} : { PYTHONPATH: ROOT_DIR })
+  };
 }
 
 function runCLI(args) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const invocation = getCLIInvocation(args);
     const options = {
       cwd: app.isPackaged ? app.getPath('userData') : ROOT_DIR,
-      env: {
-        ...process.env,
-        ...(app.isPackaged ? {} : { PYTHONPATH: ROOT_DIR })
-      },
+      env: getCLIEnv(app.isPackaged),
       maxBuffer: 10 * 1024 * 1024
     };
 
-    execFile(invocation.command, invocation.args, options, (error, stdout, stderr) => {
+    const proc = execFile(invocation.command, invocation.args, options, (error, stdout, stderr) => {
+      allChildProcesses.delete(proc);
       if (error) {
-        console.error(`CLI Error (${invocation.args.join(' ')}):`, stderr || error.message);
-        resolve({ error: stderr || error.message, stdout: stdout });
+        console.error(`[llmwiki CLI] Error (${args.join(' ')}):`, stderr || error.message);
+        resolve({ error: stderr || error.message, stdout: stdout || '' });
       } else {
+        if (stderr && stderr.trim()) console.warn(`[llmwiki CLI] stderr (${args[0]}):`, stderr.trim());
         resolve({ stdout: stdout.trim() });
       }
     });
+    allChildProcesses.add(proc);
   });
 }
 
@@ -56,14 +106,12 @@ function runCLIStreaming(args, onEvent) {
     const invocation = getCLIInvocation(args);
     const options = {
       cwd: app.isPackaged ? app.getPath('userData') : ROOT_DIR,
-      env: {
-        ...process.env,
-        ...(app.isPackaged ? {} : { PYTHONPATH: ROOT_DIR })
-      }
+      env: getCLIEnv(app.isPackaged)
     };
 
     const proc = spawn(invocation.command, invocation.args, options);
     activeIngestProcess = proc;
+    allChildProcesses.add(proc);
 
     let stdoutBuffer = '';
     let lastResult = null;
@@ -92,8 +140,12 @@ function runCLIStreaming(args, onEvent) {
     });
 
     proc.on('close', (code) => {
+      allChildProcesses.delete(proc);
       if (activeIngestProcess === proc) {
         activeIngestProcess = null;
+      }
+      if (stderrBuffer && stderrBuffer.trim()) {
+        console.warn('[llmwiki streaming] stderr:', stderrBuffer.trim());
       }
       if (stdoutBuffer.trim()) {
         const parsed = parseJsonSafe(stdoutBuffer.trim());
@@ -115,9 +167,11 @@ function runCLIStreaming(args, onEvent) {
     });
 
     proc.on('error', (err) => {
+      allChildProcesses.delete(proc);
       if (activeIngestProcess === proc) {
         activeIngestProcess = null;
       }
+      console.error('[llmwiki streaming] spawn error:', err.message);
       resolve({ error: err.message });
     });
   });
@@ -220,6 +274,19 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// Kill all spawned Python child processes when the app exits
+// This prevents zombie llmwiki / python3 processes staying alive after quit
+app.on('before-quit', () => {
+  if (allChildProcesses.size > 0) {
+    console.log(`[llmwiki] Cleaning up ${allChildProcesses.size} child process(es) before quit...`);
+    for (const proc of allChildProcesses) {
+      try { proc.kill('SIGTERM'); } catch (e) { /* already dead */ }
+    }
+    allChildProcesses.clear();
+  }
+});
+
 
 // ----------------- IPC Handlers -----------------
 
