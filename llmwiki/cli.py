@@ -640,12 +640,14 @@ def cmd_list_concepts(args):
 
 def cmd_list_raw(args):
     store = Store()
-    docs = store.raw.list_all(limit=args.limit)
+    target_ws = getattr(args, "workspace", None)
+    docs = store.raw.list_all(limit=args.limit, workspace=target_ws)
     if getattr(args, "json", False):
         print(json.dumps(docs, ensure_ascii=False, indent=2))
         return
     for d in docs:
-        print(f"- [{d['id']}] {d['title']} ({d['char_count']} chars, {d['created_at']})")
+        ws_badge = f" [{d.get('workspace_id', 'default')}]" if d.get("workspace_id") else ""
+        print(f"- [{d['id']}]{ws_badge} {d['title']} ({d['char_count']} chars, {d['created_at']})")
 
 def cmd_check_env(args):
     from .installer import check_environment
@@ -891,6 +893,7 @@ def main():
     # List raw documents
     p_list_r = subparsers.add_parser("list-raw", help="List all Layer 1 raw documents")
     p_list_r.add_argument("--limit", type=int, default=100, help="Max items")
+    p_list_r.add_argument("--workspace", "-w", default=None, help="Filter by workspace ID or 'all'")
     p_list_r.add_argument("--json", action="store_true", help="Output JSON format")
 
     # Logs

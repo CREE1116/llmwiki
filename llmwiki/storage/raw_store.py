@@ -28,9 +28,16 @@ class RawStore:
                 source_uri TEXT NOT NULL,
                 file_path TEXT NOT NULL,
                 char_count INTEGER,
+                workspace_id TEXT DEFAULT 'default',
                 created_at TEXT
             )
             """)
+            # Migration: Add workspace_id if upgraded
+            cur = conn.execute("PRAGMA table_info(raw_documents)")
+            cols = [r["name"] for r in cur.fetchall()]
+            if "workspace_id" not in cols:
+                conn.execute("ALTER TABLE raw_documents ADD COLUMN workspace_id TEXT DEFAULT 'default'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_ws ON raw_documents(workspace_id)")
             conn.commit()
 
     def compute_doc_id(self, source_uri: str, content: str) -> str:
@@ -43,7 +50,7 @@ class RawStore:
             return f"{slug}_{h[:8]}"
         return f"doc_{h}"
 
-    def save(self, title: str, source_uri: str, content: str, doc_id: Optional[str] = None) -> str:
+    def save(self, title: str, source_uri: str, content: str, doc_id: Optional[str] = None, workspace: str = "default") -> str:
         """Store raw document to disk and record metadata in SQLite."""
         if not doc_id:
             doc_id = self.compute_doc_id(source_uri, content)
@@ -52,17 +59,19 @@ class RawStore:
         file_path.write_text(content, encoding="utf-8")
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws_id = workspace or "default"
         with self.db.get_connection() as conn:
             conn.execute("""
             INSERT OR REPLACE INTO raw_documents (
-                id, title, source_uri, file_path, char_count, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                id, title, source_uri, file_path, char_count, workspace_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 doc_id,
                 title,
                 source_uri,
                 str(file_path.resolve()),
                 len(content),
+                ws_id,
                 now
             ))
             conn.commit()
@@ -85,16 +94,23 @@ class RawStore:
                 "source_uri": row["source_uri"],
                 "content": content,
                 "char_count": row["char_count"],
+                "workspace": row.get("workspace_id", "default"),
                 "created_at": row["created_at"]
             }
 
-    def list_all(self, limit: int = 50) -> list:
-        """List all archived raw documents."""
+    def list_all(self, limit: int = 50, workspace: Optional[str] = None) -> list:
+        """List archived raw documents, optionally filtered by workspace."""
         with self.db.get_connection() as conn:
-            cursor = conn.execute("""
-            SELECT id, title, source_uri, char_count, created_at
-            FROM raw_documents ORDER BY created_at DESC LIMIT ?
-            """, (limit,))
+            if workspace and workspace != "all":
+                cursor = conn.execute("""
+                SELECT id, title, source_uri, char_count, workspace_id, created_at
+                FROM raw_documents WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?
+                """, (workspace, limit))
+            else:
+                cursor = conn.execute("""
+                SELECT id, title, source_uri, char_count, workspace_id, created_at
+                FROM raw_documents ORDER BY created_at DESC LIMIT ?
+                """, (limit,))
             return [dict(r) for r in cursor.fetchall()]
 
     def delete(self, doc_id: str) -> bool:

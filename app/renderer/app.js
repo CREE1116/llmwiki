@@ -44,6 +44,7 @@ const ctx = canvas.getContext('2d');
 
 window.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
+  setupTopBar();
   setupWorkspaces();
   setupGraph();
   setupPhysicsControls();
@@ -53,6 +54,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   setupModals();
   setupSettings();
   await loadWorkspaces();
+  await refreshEnvironment();
   await refreshAll();
   setInterval(async () => {
     await loadStats();
@@ -1550,6 +1552,7 @@ async function refreshEnvironment() {
   updateConnectionRow('antigravity', env.antigravity);
   updateConnectionRow('codex', env.codex);
   updateConnectionRow('claude', env.claude);
+  updateTopBarEngine(config, env);
 }
 
 function updateEngine(provider, available) {
@@ -1629,6 +1632,7 @@ async function saveSettings() {
     return;
   }
   setSettingsMessage('저장했습니다.', 'success');
+  await refreshEnvironment();
   setTimeout(() => document.getElementById('modal-settings').classList.add('hidden'), 450);
 }
 
@@ -1636,6 +1640,63 @@ function setSettingsMessage(message, type = '') {
   const element = document.getElementById('settings-message');
   element.textContent = message;
   element.className = `settings-message ${type}`.trim();
+}
+
+// Global Top Bar
+function setupTopBar() {
+  const engineBadge = document.getElementById('topbar-engine-badge');
+  if (engineBadge) {
+    engineBadge.addEventListener('click', openSettings);
+  }
+  const wsPill = document.getElementById('topbar-ws-pill');
+  if (wsPill) {
+    wsPill.addEventListener('click', () => {
+      document.getElementById('modal-workspaces').classList.remove('hidden');
+    });
+  }
+}
+
+function updateTopBarEngine(config, env) {
+  const dot = document.getElementById('topbar-engine-dot');
+  const text = document.getElementById('topbar-engine-text');
+  if (!text || !dot) return;
+
+  const provider = config?.provider || env?.recommended_provider || 'ollama';
+  let label = '';
+  let online = false;
+
+  if (provider === 'antigravity_cli' || provider === 'antigravity') {
+    label = 'Antigravity CLI (agy)';
+    online = Boolean(env?.antigravity?.cli_detected || env?.antigravity?.detected);
+  } else if (provider === 'codex_cli') {
+    label = 'Codex CLI';
+    online = Boolean(env?.codex?.detected);
+  } else if (provider === 'claude_cli' || provider === 'claude') {
+    label = 'Claude Code';
+    online = Boolean(env?.claude?.detected);
+  } else if (provider === 'ollama') {
+    const model = config?.model || (env?.ollama?.models?.[0] || '로컬');
+    label = `Ollama (${model})`;
+    online = Boolean(env?.ollama?.running);
+  } else {
+    label = provider;
+    online = true;
+  }
+
+  text.innerHTML = `동작 모드: <strong>${escapeHtml(label)}</strong>`;
+  dot.classList.toggle('online', online);
+  dot.title = online ? '온라인 · 정상 동작' : '오프라인 / 감지 필요';
+}
+
+function updateTopBarWorkspace(wsId) {
+  const el = document.getElementById('topbar-ws-name');
+  if (!el) return;
+  if (wsId === 'all') {
+    el.textContent = '🌐 전체 (All Workspaces)';
+  } else {
+    const ws = state.workspaces.find(w => w.id === wsId);
+    el.textContent = ws?.name ? `${ws.name} (${ws.id})` : wsId;
+  }
 }
 
 // Workspaces Management
@@ -1705,6 +1766,7 @@ async function loadWorkspaces() {
   }
 
   renderWorkspacesTable(workspaces, state.currentWorkspace);
+  updateTopBarWorkspace(state.currentWorkspace);
 }
 
 function renderWorkspacesTable(workspaces, activeId) {
@@ -1763,6 +1825,7 @@ async function switchWorkspace(wsId) {
 
   await refreshAll();
   await loadWorkspaces();
+  updateTopBarWorkspace(state.currentWorkspace);
 }
 
 async function createNewWorkspace() {

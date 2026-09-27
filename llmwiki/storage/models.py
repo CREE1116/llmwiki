@@ -19,6 +19,9 @@ class Workspace:
     concept_count: int = 0
     raw_count: int = 0
 
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass
 class Relation:

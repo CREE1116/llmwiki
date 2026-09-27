@@ -47,6 +47,24 @@
     </aside>
 
     <main class="workspace">
+      <header class="global-top-bar">
+        <div class="top-bar-left">
+          <button class="topbar-ws-pill" id="topbar-ws-pill" title="클릭하여 워크스페이스 관리 열기">
+            <span class="ws-pill-icon">🏢</span>
+            <span class="ws-pill-label">워크스페이스:</span>
+            <strong id="topbar-ws-name">default</strong>
+            <span class="pill-arrow">›</span>
+          </button>
+        </div>
+        <div class="top-bar-right">
+          <button class="topbar-engine-badge" id="topbar-engine-badge" title="클릭하여 처리 엔진 및 에이전트 연결 설정 열기">
+            <span class="engine-badge-dot" id="topbar-engine-dot"></span>
+            <span class="engine-badge-text" id="topbar-engine-text">동작 모드: <strong>확인 중…</strong></span>
+            <span class="badge-gear">⚙</span>
+          </button>
+        </div>
+      </header>
+
       <section id="tab-graph" class="view-panel active">
         <header class="view-header">
           <div>

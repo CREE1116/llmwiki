@@ -87,6 +87,43 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
+  if (process.env.LLMWIKI_CAPTURE === '1') {
+    mainWindow.webContents.on('did-finish-load', async () => {
+      await new Promise(r => setTimeout(r, 2500));
+      const assetsDir = path.join(ROOT_DIR, 'assets');
+      if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
+
+      let img = await mainWindow.capturePage();
+      fs.writeFileSync(path.join(assetsDir, 'screenshot-graph.png'), img.toPNG());
+
+      await mainWindow.webContents.executeJavaScript(`
+        document.getElementById('modal-workspaces').classList.remove('hidden');
+      `);
+      await new Promise(r => setTimeout(r, 800));
+      img = await mainWindow.capturePage();
+      fs.writeFileSync(path.join(assetsDir, 'screenshot-workspaces.png'), img.toPNG());
+
+      await mainWindow.webContents.executeJavaScript(`
+        document.getElementById('modal-workspaces').classList.add('hidden');
+        document.getElementById('modal-settings').classList.remove('hidden');
+      `);
+      await new Promise(r => setTimeout(r, 800));
+      img = await mainWindow.capturePage();
+      fs.writeFileSync(path.join(assetsDir, 'screenshot-settings.png'), img.toPNG());
+
+      await mainWindow.webContents.executeJavaScript(`
+        document.getElementById('modal-settings').classList.add('hidden');
+        document.querySelector('.nav-btn[data-tab="tab-ingest"]').click();
+      `);
+      await new Promise(r => setTimeout(r, 800));
+      img = await mainWindow.capturePage();
+      fs.writeFileSync(path.join(assetsDir, 'screenshot-ingest.png'), img.toPNG());
+
+      console.log('All screenshots captured into assets/');
+      app.quit();
+    });
+  }
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
