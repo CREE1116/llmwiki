@@ -751,17 +751,16 @@ def cmd_check_env(args):
     print(f"    - Current Provider: {cfg.get('provider')} ({cfg.get('model')})")
 
 def cmd_install_skills(args):
-    from .installer import install_antigravity_skill, install_antigravity_mcp, install_claude_mcp, install_codex_mcp, install_cli_symlink
+    from .installer import install_antigravity_skill, install_claude_skill, install_codex_skill, install_cli_symlink, uninstall_mcp_servers
+    uninstall_mcp_servers()
     results = {}
     install_all = args.all or not (args.antigravity or args.claude or args.codex or args.symlink)
     if args.antigravity or install_all:
-        skill_res = install_antigravity_skill()
-        mcp_res = install_antigravity_mcp()
-        results["antigravity"] = bool(skill_res or mcp_res)
+        results["antigravity"] = install_antigravity_skill()
     if args.claude or install_all:
-        results["claude"] = install_claude_mcp()
+        results["claude"] = install_claude_skill()
     if args.codex or install_all:
-        results["codex"] = install_codex_mcp()
+        results["codex"] = install_codex_skill()
     if args.symlink or install_all:
         results["cli_symlink"] = install_cli_symlink()
 
@@ -769,7 +768,7 @@ def cmd_install_skills(args):
         print(json.dumps(results, ensure_ascii=False, indent=2))
         return
 
-    print("[+] Skill & MCP Installation Results:")
+    print("[+] Zero-Daemon Agent Skill Installation Results:")
     for k, v in results.items():
         print(f"    - {k}: {'Installed successfully' if v else 'Failed or skipped'}")
 

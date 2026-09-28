@@ -395,8 +395,40 @@ class MCPServer:
 
 
     def run_stdio(self):
+        """Standard MCP JSON-RPC 2.0 read-eval loop over stdin/stdout with parent watchdog."""
+        import os
+        import signal
+        import threading
+        import time
 
-        """Standard MCP JSON-RPC 2.0 read-eval loop over stdin/stdout."""
+        def _sig_handler(signum, frame):
+            os._exit(0)
+
+        for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None), getattr(signal, "SIGHUP", None), getattr(signal, "SIGPIPE", None)):
+            if sig:
+                try:
+                    signal.signal(sig, _sig_handler)
+                except Exception:
+                    pass
+
+        # Watchdog: if parent process dies or becomes PID 1 (init/launchd), terminate immediately
+        initial_ppid = os.getppid()
+
+        def _parent_watchdog():
+            while True:
+                time.sleep(2)
+                curr_ppid = os.getppid()
+                if curr_ppid != initial_ppid or curr_ppid <= 1:
+                    os._exit(0)
+                try:
+                    os.kill(initial_ppid, 0)
+                except (ProcessLookupError, PermissionError) as e:
+                    if isinstance(e, ProcessLookupError):
+                        os._exit(0)
+
+        t = threading.Thread(target=_parent_watchdog, daemon=True)
+        t.start()
+
         for line in sys.stdin:
             line = line.strip()
             if not line:

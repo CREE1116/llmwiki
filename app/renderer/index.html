@@ -18,18 +18,6 @@
         </div>
       </div>
 
-      <div class="workspace-switcher">
-        <div class="workspace-switcher-header">
-          <span class="workspace-eyebrow">WORKSPACE</span>
-          <button id="btn-open-workspace-modal" class="icon-btn-micro" title="워크스페이스 관리 및 생성">⚙</button>
-        </div>
-        <div class="workspace-select-wrapper">
-          <select id="workspace-select" class="workspace-dropdown" aria-label="활성 워크스페이스 선택">
-            <option value="default">default (기본)</option>
-          </select>
-        </div>
-      </div>
-
       <nav class="nav-menu" aria-label="주요 메뉴">
         <button class="nav-btn active" data-tab="tab-graph"><span class="nav-icon">⌘</span><span>그래프</span></button>
         <button class="nav-btn" data-tab="tab-library"><span class="nav-icon">▤</span><span>자료</span></button>
@@ -400,20 +388,20 @@
 
         <section>
           <div class="section-heading">
-            <div><h3>에이전트에서 LLMWiki 사용</h3><p>MCP로 연결하면 대화 중 이 지식 저장소를 검색할 수 있습니다.</p></div>
+            <div><h3>에이전트 스킬 연동 (Zero-Daemon)</h3><p>백그라운드 상주 프로세스(데몬) 없이 CLI 기반 에이전트 스킬로 안전하게 연동됩니다.</p></div>
           </div>
           <div class="connection-list">
             <div class="connection-row">
-              <div><strong>Antigravity</strong><span id="antigravity-connection-copy">확인 중</span></div>
-              <button id="btn-connect-antigravity" class="btn btn-quiet">연결</button>
+              <div><strong>Antigravity Skill</strong><span id="antigravity-connection-copy">확인 중</span></div>
+              <button id="btn-connect-antigravity" class="btn btn-quiet">스킬 등록</button>
             </div>
             <div class="connection-row">
-              <div><strong>Codex</strong><span id="codex-connection-copy">확인 중</span></div>
-              <button id="btn-connect-codex" class="btn btn-quiet">연결</button>
+              <div><strong>Codex Skill</strong><span id="codex-connection-copy">확인 중</span></div>
+              <button id="btn-connect-codex" class="btn btn-quiet">스킬 등록</button>
             </div>
             <div class="connection-row">
-              <div><strong>Claude Code</strong><span id="claude-connection-copy">확인 중</span></div>
-              <button id="btn-connect-claude" class="btn btn-quiet">연결</button>
+              <div><strong>Claude Code Skill</strong><span id="claude-connection-copy">확인 중</span></div>
+              <button id="btn-connect-claude" class="btn btn-quiet">스킬 등록</button>
             </div>
           </div>
         </section>

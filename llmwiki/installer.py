@@ -106,27 +106,33 @@ def check_environment() -> Dict[str, Any]:
     except Exception:
         pass
 
-    codex = _mcp_status("codex")
-    claude = _mcp_status("claude")
+    codex_detected = find_binary("codex") is not None or (HOME / ".codex").exists()
+    claude_detected = find_binary("claude") is not None or (HOME / ".claude").exists()
     agy_path = find_binary("agy") or find_binary("antigravity")
     antigravity_detected = (HOME / ".gemini").exists() or agy_path is not None
     recommended = (
         "ollama" if ollama_running and ollama_models
         else "antigravity_cli" if agy_path
-        else "codex_cli" if codex["detected"]
-        else "claude_cli" if claude["detected"]
+        else "codex_cli" if codex_detected
+        else "claude_cli" if claude_detected
         else "ollama"
     )
     return {
         "ollama": {"running": ollama_running, "models": ollama_models},
-        "codex": codex,
-        "claude": claude,
+        "codex": {
+            "detected": codex_detected,
+            "skill_installed": (CODEX_SKILLS_DIR / "SKILL.md").exists(),
+        },
+        "claude": {
+            "detected": claude_detected,
+            "skill_installed": (CLAUDE_COMMANDS_DIR / "llmwiki.md").exists(),
+        },
         "antigravity": {
             "detected": antigravity_detected,
             "cli_detected": agy_path is not None,
             "cli_path": agy_path or "",
             "skill_installed": (ANTIGRAVITY_SKILLS_DIR / "SKILL.md").exists(),
-            "mcp_installed": _is_antigravity_mcp_installed(),
+            "mcp_installed": False,
         },
         "recommended_provider": recommended,
     }
@@ -180,6 +186,10 @@ def install_antigravity_mcp() -> bool:
     return success
 
 
+CODEX_SKILLS_DIR = HOME / ".codex" / "skills" / "llmwiki"
+CLAUDE_COMMANDS_DIR = HOME / ".claude" / "commands"
+
+
 def install_antigravity_skill() -> bool:
     try:
         candidates = [
@@ -198,30 +208,57 @@ def install_antigravity_skill() -> bool:
         return False
 
 
-
-def _install_mcp(binary: str) -> bool:
-    path = find_binary(binary)
-    if not path:
-        return False
-    if _mcp_status(binary)["mcp_installed"]:
-        return True
-    cli_command = _cli_command()
-    if binary == "codex":
-        command = [path, "mcp", "add", "llmwiki", "--", *cli_command, "serve-mcp"]
-    else:
-        command = [path, "mcp", "add", "--scope", "user", "llmwiki", "--", *cli_command, "serve-mcp"]
+def install_codex_skill() -> bool:
     try:
-        return _run(command, timeout=20).returncode == 0
+        source = PROJECT_ROOT / ".agents" / "skills" / "llmwiki" / "SKILL.md"
+        if not source.exists():
+            return False
+        CODEX_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, CODEX_SKILLS_DIR / "SKILL.md")
+        return True
     except Exception:
         return False
 
 
-def install_codex_mcp() -> bool:
-    return _install_mcp("codex")
+def install_claude_skill() -> bool:
+    try:
+        source = PROJECT_ROOT / ".agents" / "skills" / "llmwiki" / "SKILL.md"
+        if not source.exists():
+            return False
+        CLAUDE_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, CLAUDE_COMMANDS_DIR / "llmwiki.md")
+        return True
+    except Exception:
+        return False
 
 
-def install_claude_mcp() -> bool:
-    return _install_mcp("claude")
+def uninstall_mcp_servers() -> None:
+    """Safely remove any leftover MCP daemon registrations from Codex and Claude."""
+    import json
+    import re
+
+    # 1. Clean ~/.codex/config.toml
+    codex_cfg = HOME / ".codex" / "config.toml"
+    if codex_cfg.exists():
+        try:
+            content = codex_cfg.read_text(encoding="utf-8")
+            new_content = re.sub(r'\[mcp_servers\.llmwiki\][\s\S]*?(?=\n\[|\Z)', '', content)
+            new_content = re.sub(r'\[mcp_servers\.llmwiki\.env\][\s\S]*?(?=\n\[|\Z)', '', new_content)
+            if new_content != content:
+                codex_cfg.write_text(new_content, encoding="utf-8")
+        except Exception:
+            pass
+
+    # 2. Clean ~/.claude.json
+    claude_cfg = HOME / ".claude.json"
+    if claude_cfg.exists():
+        try:
+            data = json.loads(claude_cfg.read_text(encoding="utf-8"))
+            if "mcpServers" in data and "llmwiki" in data["mcpServers"]:
+                del data["mcpServers"]["llmwiki"]
+                claude_cfg.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def install_cli_symlink() -> bool:
@@ -311,14 +348,15 @@ def bootstrap_installation() -> Dict[str, Any]:
         "antigravity": None,
     }
 
+    # Clean up any obsolete background MCP servers
+    uninstall_mcp_servers()
+
     if env["codex"]["detected"]:
-        results["codex"] = install_codex_mcp()
+        results["codex"] = install_codex_skill()
     if env["claude"]["detected"]:
-        results["claude"] = install_claude_mcp()
+        results["claude"] = install_claude_skill()
     if env["antigravity"]["detected"]:
-        skill_res = install_antigravity_skill()
-        mcp_res = install_antigravity_mcp()
-        results["antigravity"] = {"skill": skill_res, "mcp": mcp_res}
+        results["antigravity"] = install_antigravity_skill()
 
     cfg = load_config()
 

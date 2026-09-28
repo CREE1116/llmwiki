@@ -1741,18 +1741,18 @@ function updateConnectionRow(agent, info) {
   const button = document.getElementById(`btn-connect-${agent}`);
   if (!button || !copy) return;
   const isDetected = Boolean(info?.detected || info?.cli_detected);
-  const isConnected = Boolean(info?.mcp_installed || info?.skill_installed);
+  const isConnected = Boolean(info?.skill_installed || info?.mcp_installed);
   if (!isDetected) {
     copy.textContent = 'CLI/환경을 찾지 못했습니다';
     button.textContent = '사용 불가';
     button.disabled = true;
   } else if (isConnected) {
-    copy.textContent = 'LLMWiki 연결됨';
-    button.textContent = '연결됨';
+    copy.textContent = '스킬 등록 완료 (Zero-Daemon)';
+    button.textContent = '등록 완료';
     button.disabled = true;
   } else {
-    copy.textContent = '설치됨 · 아직 연결되지 않음';
-    button.textContent = '연결';
+    copy.textContent = 'CLI 감지됨 · 스킬 등록 가능';
+    button.textContent = '스킬 등록';
     button.disabled = false;
   }
 }
