@@ -206,6 +206,10 @@ class Store:
         - 'all' / None: Search across all workspaces without filtering
         - '<workspace_id>': Scope search to specific workspace
         """
+        # Workspace alias support (e.g. 'typemoon' -> '타입문')
+        if workspace and workspace.lower() in ("typemoon", "type_moon"):
+            workspace = "타입문"
+
         ws_filter: Optional[str] = None
         if workspace == "auto":
             routed_ws, route_score = self.vectors.route_query(query)
@@ -216,69 +220,91 @@ class Store:
         else:
             ws_filter = workspace
 
+        # 1. Primary Layer 2 / Layer 3 search
         if mode in ("vector", "semantic"):
-            return self.vectors.search_semantic(query, top_k=limit, workspace=ws_filter)
+            hits = self.vectors.search_semantic(query, top_k=limit, workspace=ws_filter)
         elif mode in ("keyword", "fts"):
-            return self.db.search(query, limit=limit, workspace=ws_filter)
+            hits = self.db.search(query, limit=limit, workspace=ws_filter)
         elif mode in ("graph", "hipporag", "network"):
             # HippoRAG: Multi-hop graph associative retrieval with workspace scoping
             from .graph import KnowledgeGraph
             initial_hits = self.vectors.hybrid_search(query, top_k=max(limit * 2, 8), workspace=ws_filter)
             if not initial_hits:
-                return []
+                hits = []
+            else:
+                kg = KnowledgeGraph(db=self.db)
+                seed_weights = {h.concept_id: max(0.1, h.score) for h in initial_hits}
+                ppr_scores = kg.personalized_pagerank(seed_weights, alpha=0.85)
 
-            kg = KnowledgeGraph(db=self.db)
-            seed_weights = {h.concept_id: max(0.1, h.score) for h in initial_hits}
-            ppr_scores = kg.personalized_pagerank(seed_weights, alpha=0.85)
+                meta_map = {h.concept_id: h for h in initial_hits}
+                augmented = []
+                max_ppr = max(ppr_scores.values(), default=1.0) or 1.0
 
-            # Pool metadata for all known concepts
-            meta_map = {h.concept_id: h for h in initial_hits}
-
-            # Combine initial semantic relevance with graph topological relevance
-            augmented = []
-            max_ppr = max(ppr_scores.values(), default=1.0) or 1.0
-
-            for cid, ppr in ppr_scores.items():
-                if ppr <= 0:
-                    continue
-                norm_ppr = ppr / max_ppr
-                seed_score = seed_weights.get(cid, 0.0)
-                final_score = 0.6 * seed_score + 0.4 * (norm_ppr * 100.0)
-
-                if cid in meta_map:
-                    base = meta_map[cid]
-                else:
-                    c = self.get_concept(cid)
-                    if not c:
+                for cid, ppr in ppr_scores.items():
+                    if ppr <= 0:
                         continue
-                    if ws_filter and c.workspace != ws_filter:
-                        continue
-                    base = SearchResult(
-                        concept_id=c.id,
-                        name=c.name,
-                        type=c.type,
-                        summary=c.summary,
-                        tags=c.tags,
-                        score=0.0,
-                        matched_by="graph_ppr",
-                        workspace=c.workspace
-                    )
+                    norm_ppr = ppr / max_ppr
+                    seed_score = seed_weights.get(cid, 0.0)
+                    final_score = 0.6 * seed_score + 0.4 * (norm_ppr * 100.0)
 
-                augmented.append(SearchResult(
-                    concept_id=cid,
-                    name=base.name,
-                    type=base.type,
-                    summary=base.summary,
-                    tags=base.tags,
-                    score=round(final_score, 4),
-                    matched_by="hipporag",
-                    workspace=base.workspace
-                ))
+                    if cid in meta_map:
+                        base = meta_map[cid]
+                    else:
+                        c = self.get_concept(cid)
+                        if not c:
+                            continue
+                        if ws_filter and c.workspace != ws_filter:
+                            continue
+                        base = SearchResult(
+                            concept_id=c.id,
+                            name=c.name,
+                            type=c.type,
+                            summary=c.summary,
+                            tags=c.tags,
+                            score=0.0,
+                            matched_by="graph_ppr",
+                            workspace=c.workspace
+                        )
 
-            augmented.sort(key=lambda x: x.score, reverse=True)
-            return augmented[:limit]
+                    augmented.append(SearchResult(
+                        concept_id=cid,
+                        name=base.name,
+                        type=base.type,
+                        summary=base.summary,
+                        tags=base.tags,
+                        score=round(final_score, 4),
+                        matched_by="hipporag",
+                        workspace=base.workspace
+                    ))
+
+                augmented.sort(key=lambda x: x.score, reverse=True)
+                hits = augmented[:limit]
         else:  # default hybrid
-            return self.vectors.hybrid_search(query, top_k=limit, workspace=ws_filter)
+            hits = self.vectors.hybrid_search(query, top_k=limit, workspace=ws_filter)
+
+        # 2. Augment with Layer 1 (RawStore) archive hits
+        # If an entity is not yet distilled into Layer 2, Layer 1 matches surface the raw evidence
+        try:
+            raw_matches = self.raw.search(query, limit=max(2, limit // 2), workspace=ws_filter)
+            concept_ids_set = {h.concept_id for h in hits}
+            for rm in raw_matches:
+                raw_cid = f"raw:{rm['id']}"
+                if raw_cid in concept_ids_set:
+                    continue
+                hits.append(SearchResult(
+                    concept_id=raw_cid,
+                    name=f"📄 {rm['title']}",
+                    type="raw_archive",
+                    summary=f"[Layer 1 원문] {rm['snippet']}",
+                    tags=["raw_source", f"matches:{rm['match_count']}"],
+                    score=0.55 + min(0.35, rm["match_count"] * 0.02),
+                    matched_by="raw_store",
+                    workspace=rm.get("workspace", "default")
+                ))
+        except Exception:
+            pass
+
+        return hits[:limit]
 
     def create_workspace(self, workspace_id: str, name: str = "", description: str = "") -> Workspace:
         """Create a new knowledge workspace."""

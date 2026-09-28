@@ -812,15 +812,19 @@ def cmd_reindex(args):
 
 def cmd_re_distill(args):
     from .synthesizer.distiller import Distiller
-    store = Store()
+    target_ws = getattr(args, "workspace", None)
+    if target_ws and target_ws.lower() in ("typemoon", "type_moon"):
+        target_ws = "타입문"
+    store = Store(workspace=target_ws)
     distiller = Distiller(store=store)
-    docs = store.raw.list_all(limit=args.limit)
+    docs = store.raw.list_all(limit=args.limit, workspace=target_ws)
     total = len(docs)
     processed = 0
     total_concepts = 0
 
     if not getattr(args, "json", False):
-        print(f"[*] Re-distilling atomic knowledge concepts from {total} raw documents...")
+        ws_info = f" (Workspace: {target_ws})" if target_ws else ""
+        print(f"[*] Re-distilling atomic knowledge concepts from {total} raw documents{ws_info}...")
 
     for i, d in enumerate(docs, 1):
         doc_data = store.raw.get(d["id"])
@@ -1014,6 +1018,7 @@ def main():
     p_reindex.add_argument("--json", action="store_true", help="Output JSON format")
 
     p_redistill = subparsers.add_parser("re-distill", help="Re-distill atomic concepts and links from raw documents")
+    p_redistill.add_argument("--workspace", "-w", default=None, help="Scope re-distillation to specific workspace")
     p_redistill.add_argument("--limit", type=int, default=100, help="Max raw documents to process")
     p_redistill.add_argument("--json", action="store_true", help="Output JSON format")
 

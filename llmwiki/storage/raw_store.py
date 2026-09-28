@@ -94,7 +94,7 @@ class RawStore:
                 "source_uri": row["source_uri"],
                 "content": content,
                 "char_count": row["char_count"],
-                "workspace": row.get("workspace_id", "default"),
+                "workspace": row["workspace_id"] if "workspace_id" in row.keys() else "default",
                 "created_at": row["created_at"]
             }
 
@@ -133,3 +133,61 @@ class RawStore:
             conn.execute("DELETE FROM sources WHERE source_uri = ?", (f"raw:{doc_id}",))
             conn.commit()
             return True
+
+    def search(self, query: str, limit: int = 5, workspace: Optional[str] = None) -> list:
+        """Search across raw archived documents and return matching snippets."""
+        q_lower = query.lower().strip()
+        if not q_lower:
+            return []
+
+        results = []
+        with self.db.get_connection() as conn:
+            if workspace and workspace != "all":
+                cursor = conn.execute(
+                    "SELECT id, title, source_uri, file_path, workspace_id, created_at FROM raw_documents WHERE workspace_id = ?",
+                    (workspace,)
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT id, title, source_uri, file_path, workspace_id, created_at FROM raw_documents"
+                )
+            rows = cursor.fetchall()
+
+        for r in rows:
+            title = r["title"] or ""
+            fp = Path(r["file_path"])
+            matched = False
+            snippet = ""
+            count = 0
+
+            # Title match
+            if q_lower in title.lower():
+                matched = True
+                count += 5
+
+            # Content match
+            if fp.exists():
+                try:
+                    content = fp.read_text(encoding="utf-8")
+                    idx = content.lower().find(q_lower)
+                    if idx != -1:
+                        matched = True
+                        count += content.lower().count(q_lower)
+                        start = max(0, idx - 60)
+                        end = min(len(content), idx + len(query) + 90)
+                        snippet = ("..." if start > 0 else "") + content[start:end].replace("\r", " ").replace("\n", " ").strip() + ("..." if end < len(content) else "")
+                except Exception:
+                    pass
+
+            if matched:
+                results.append({
+                    "id": r["id"],
+                    "title": title,
+                    "source_uri": r["source_uri"],
+                    "workspace": r["workspace_id"] or "default",
+                    "snippet": snippet or title,
+                    "match_count": count
+                })
+
+        results.sort(key=lambda x: x["match_count"], reverse=True)
+        return results[:limit]

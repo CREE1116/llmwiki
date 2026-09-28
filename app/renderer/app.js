@@ -15,7 +15,7 @@ function loadSavedPhysics() {
 
 const state = {
   activeTab: 'tab-graph',
-  currentWorkspace: 'default',
+  currentWorkspace: null,
   workspaces: [],
   graph: { nodes: [], edges: [] },
   transform: { x: 0, y: 0, scale: 1 },

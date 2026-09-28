@@ -79,13 +79,125 @@ class Distiller:
 
         return text
 
+    def _clean_web_noise(self, text: str) -> str:
+        """Strip wiki navigation templates, footers, categories, and noise."""
+        cleaned = re.sub(r"\[include\([^\)]+\)\]", "", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\{\{[^\}]+\}\}", "", cleaned)
+        cleaned = re.sub(r"\[\[분류:[^\]]+\]\]", "", cleaned)
+        cleaned = re.sub(r"\[\*[^\]]*\]", "", cleaned)
+        cleaned = re.sub(r"\[\d+\]", "", cleaned)
+
+        noise_lines = (
+            "최근 변경", "최근 토론", "특수 기능", "최근 수정", "편집 토론",
+            "목차", "table of contents", "navigation", "cookie",
+            "all rights reserved", "copyright", "상위 문서:"
+        )
+        lines = []
+        for line in cleaned.splitlines():
+            l_strip = line.strip()
+            if any(nl in l_strip for nl in noise_lines) and len(l_strip) < 30:
+                continue
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _chunk_text(self, text: str, chunk_size: int = 7000) -> List[str]:
+        """Split long document into semantic chunks using headers or paragraphs."""
+        if len(text) <= chunk_size:
+            return [text]
+
+        chunks = []
+        sections = re.split(r"(?=\n#{1,3}\s+)", text)
+        current = ""
+        for sec in sections:
+            if len(current) + len(sec) < chunk_size:
+                current += sec
+            else:
+                if current.strip():
+                    chunks.append(current.strip())
+                if len(sec) > chunk_size:
+                    paras = sec.split("\n\n")
+                    sub_cur = ""
+                    for p in paras:
+                        if len(sub_cur) + len(p) < chunk_size:
+                            sub_cur += p + "\n\n"
+                        else:
+                            if sub_cur.strip():
+                                chunks.append(sub_cur.strip())
+                            sub_cur = p + "\n\n"
+                    current = sub_cur
+                else:
+                    current = sec
+
+        if current.strip():
+            chunks.append(current.strip())
+
+        return chunks[:6] if chunks else [text[:chunk_size]]
+
+    def _extract_key_entities_from_text(self, text: str, limit: int = 8) -> List[Dict[str, Any]]:
+        """
+        Extract prominent named entities from body text using syntax patterns
+        (bold text, quotes, headers, and repeated significant nouns).
+        Guarantees that core characters, mechanisms, and lore terms (e.g. '알퀘이드')
+        are reliably distilled into concepts even without LLM.
+        """
+        entities = {}
+
+        # 1. Bold text patterns: '''Keyword''' or **Keyword**
+        bolds = re.findall(r"(?:'''|\*\*)([가-힣a-zA-Z0-9_\- ]{2,30})(?:'''|\*\*)", text)
+        for b in bolds:
+            b_clean = b.strip()
+            if len(b_clean) >= 2 and not b_clean.isdigit():
+                entities[b_clean] = entities.get(b_clean, 0) + 4
+
+        # 2. Korean quotation patterns: 「Keyword」, 『Keyword』, "Keyword"
+        quotes = re.findall(r"[「『\"]([가-힣a-zA-Z0-9_\- ]{2,25})[」』\"]", text)
+        for q in quotes:
+            q_clean = q.strip()
+            if len(q_clean) >= 2 and not q_clean.isdigit():
+                entities[q_clean] = entities.get(q_clean, 0) + 3
+
+        # 3. Section subheadings: e.g. ## 2.1. 알퀘이드 루트
+        subheads = re.findall(r"\n#{1,4}\s*(?:\d+[\.\s]+)*([가-힣a-zA-Z0-9_\- ]{2,30})", text)
+        for sh in subheads:
+            sh_clean = re.sub(r"^(?:개요|소개|역사|목록|기타|상세|특징|설정)\s*", "", sh.strip()).strip()
+            if len(sh_clean) >= 2 and not sh_clean.isdigit():
+                entities[sh_clean] = entities.get(sh_clean, 0) + 5
+
+        stop_words = {
+            "문서", "편집", "토론", "역사", "분류", "상위", "하위", "기타", "내용", "참조",
+            "자세한", "설명", "개요", "특징", "항목", "관련", "경우", "이후", "당시",
+            "자신", "그녀", "그들", "때문", "정도", "사실", "생각", "존재", "사람",
+            "세계관", "작품", "시리즈", "캐릭터", "주인공", "등장인물", "플레이어", "나무위키"
+        }
+
+        filtered = []
+        for ent, score in sorted(entities.items(), key=lambda x: x[1], reverse=True):
+            if ent in stop_words or any(sw == ent for sw in stop_words):
+                continue
+            if len(ent) < 2 or len(ent) > 25:
+                continue
+
+            # Find representative sentence
+            pattern = re.compile(rf"([^.?!;\n]*?{re.escape(ent)}[^.?!;\n]*[.?!;\n])", re.DOTALL)
+            match = pattern.search(text)
+            context = match.group(1).replace("\n", " ").strip() if match else f"{ent}에 대한 핵심 설정 및 특성"
+            filtered.append({
+                "name": ent,
+                "score": score,
+                "context": context[:250]
+            })
+            if len(filtered) >= limit:
+                break
+
+        return filtered
+
     def _heuristic_distill_fallback(self, doc_title: str, text: str, source: str, raw_doc_id: str) -> List[Concept]:
         """
-        Extract 2 to 4 atomic concepts (Architecture, Technique, Entity, Theory)
-        from a single document even when local LLM is temporarily unreachable.
-        Deconstructs titles/headings, cleans web/wiki noise, establishes structural relations,
-        and deduplicates/merges against existing knowledge via vector similarity.
+        Extract primary architecture concept AND deep body entities (e.g. characters, lore,
+        mechanisms) from document text even when local LLM is temporarily unreachable.
         """
+        clean_text = self._clean_web_noise(text)
+
         # Strip common web/wiki title suffixes
         clean_title = re.sub(
             r"\s*[-—|::]\s*(나무위키|위키백과|Wikipedia|velog|GitHub|tistory|블로그|Blog|뉴스|News).*$",
@@ -94,127 +206,69 @@ class Distiller:
         if not clean_title:
             clean_title = doc_title.strip()
 
-        # Filter noise lines (web navigation, wiki headers, table of contents)
-        noise_prefixes = (
-            "최근 변경", "최근 토론", "특수 기능", "최근 수정", "편집 토론",
-            "분류 ", "목차", "table of contents", "navigation", "cookie",
-            "all rights reserved", "copyright", "상위 문서:"
-        )
-        raw_lines = [l.strip() for l in re.split(r"[\r\n]+", text) if len(l.strip()) > 3]
+        raw_lines = [l.strip() for l in re.split(r"[\r\n]+", clean_text) if len(l.strip()) > 3]
         meaningful_lines = []
-        is_past_header = False
-
         for l in raw_lines:
             l_clean = re.sub(r"^#+\s*", "", l).strip()
-            if not l_clean:
-                continue
-
-            # Detect main content entrypoint (e.g. 1. 개요, 1. 소개, Abstract, Introduction)
-            if re.match(r"^(?:1\s*[\.\:]\s*(?:개요|소개|설명|서론|overview|introduction)|abstract|overview)", l_clean, flags=re.IGNORECASE):
-                is_past_header = True
-                continue
-
-            if not is_past_header:
-                if any(p in l_clean for p in noise_prefixes):
-                    continue
-                if re.match(r"^\d+\s*$", l_clean):  # Bare numbers
-                    continue
-                if re.match(r"^\d+\s*\.\s*.+\d+\s*\.\s*.+", l_clean):  # Table of contents line e.g. "1 . 개요 2 . 명칭..."
-                    continue
-                if "[편집]" in l_clean:
-                    continue
-
-            if len(l_clean) < 8:
-                continue
-
-            meaningful_lines.append(l_clean)
-
-        # If clean_title is a URL, DOI, or raw hash/filename, extract real title from first meaningful lines
-        if re.match(r"^https?://|^doi:|^doc_|^[a-zA-Z0-9_\.\-]+\.(?:pdf|txt|md)$", clean_title, flags=re.IGNORECASE):
-            for l in meaningful_lines[:6]:
-                if len(l) >= 6 and not re.match(r"^https?://|^(?:©|승인|인용|doi:)", l, flags=re.IGNORECASE):
-                    clean_title = l[:60]
-                    break
-
-        # Split title into atomic entity candidates
-        # Note: Do NOT split on single hyphen inside words like TYPE-MOON or Claude-3! Only split on space-padded dashes or colons
-        split_pattern = r"(?:\s+[-—]\s+)|\s*[:：|]\s*|(?:\s+via\s+)|\s+using\s+|\s+for\s+|\s+and\s+|(?:\s+및\s+)|(?:\s+을 위한\s+)|(?:\s+를 위한\s+)|(?:\s+을 통한\s+)|(?:\s+를 통한\s+)"
-        raw_parts = [p.strip() for p in re.split(split_pattern, clean_title, flags=re.IGNORECASE) if len(p.strip()) >= 2]
-
-        cleaned_parts = []
-        for p in raw_parts:
-            p_clean = re.sub(r"^(최신 업데이트|인용|http[s]?://\S+|doi:\S+)", "", p, flags=re.IGNORECASE).strip()
-            # If part contains slash (e.g. TYPE-MOON/세계관), treat full phrase first, then subparts
-            if "/" in p_clean:
-                joined_phrase = p_clean.replace("/", " ").strip()
-                if joined_phrase and joined_phrase not in cleaned_parts:
-                    cleaned_parts.append(joined_phrase)
-                sub_parts = [sp.strip() for sp in p_clean.split("/") if len(sp.strip()) >= 2]
-                for sp in sub_parts:
-                    if sp not in cleaned_parts and len(sp) >= 2:
-                        cleaned_parts.append(sp)
-            else:
-                if len(p_clean) >= 2 and p_clean not in cleaned_parts:
-                    cleaned_parts.append(p_clean)
+            if len(l_clean) >= 8 and not re.match(r"^\d+\s*$", l_clean):
+                meaningful_lines.append(l_clean)
 
         today = datetime.now().strftime("%Y-%m-%d")
+        target_ws = self.store.workspace or "default"
 
-        if not cleaned_parts:
-            cleaned_parts = [clean_title[:40]]
-
-        primary_name = cleaned_parts[0]
-        cid_primary = re.sub(r"[^a-zA-Z0-9가-힣]+", "_", primary_name.lower()).strip("_")
+        # 1. Primary Concept from Document Title
+        cid_primary = re.sub(r"[^a-zA-Z0-9가-힣]+", "_", clean_title.lower()).strip("_")
         if not cid_primary:
             cid_primary = f"concept_{raw_doc_id[:8]}"
 
-        summary_primary = meaningful_lines[0] if meaningful_lines else f"Core principles of {primary_name}"
+        summary_primary = meaningful_lines[0] if meaningful_lines else f"{clean_title}의 개요 및 핵심 원리"
         if len(meaningful_lines) > 1:
             summary_primary += f" {meaningful_lines[1]}"
 
         concepts_to_save = []
         relations_primary = []
 
-        for i, sub_part in enumerate(cleaned_parts[1:4], 1):
-            sub_cid = re.sub(r"[^a-zA-Z0-9가-힣]+", "_", sub_part.lower()).strip("_")
-            if not sub_cid or sub_cid == cid_primary:
+        # 2. Extract Deep Body Entities (Characters, Settings, Sub-mechanisms)
+        body_entities = self._extract_key_entities_from_text(clean_text, limit=6)
+        for ent_info in body_entities:
+            ent_name = ent_info["name"]
+            ent_cid = re.sub(r"[^a-zA-Z0-9가-힣]+", "_", ent_name.lower()).strip("_")
+            if not ent_cid or ent_cid == cid_primary:
                 continue
 
-            rel_type = "solves" if i == len(cleaned_parts) - 1 and len(cleaned_parts) > 2 else "related_to"
-            sub_type = "theory" if any(kw in sub_part.lower() for kw in ["공정성", "fairness", "problem", "bubble", "버블", "한계"]) else "concept"
-
-            sub_summary = meaningful_lines[i] if i < len(meaningful_lines) else f"Key mechanism: {sub_part} in context of {primary_name}"
             sub_concept = Concept(
-                id=sub_cid,
-                name=sub_part,
+                id=ent_cid,
+                name=ent_name,
                 aliases=[],
-                type=sub_type,
-                tags=["atomic_extracted"],
-                relations=[Relation(type="part_of", target=cid_primary, reason=f"{primary_name}의 핵심 구성요소 및 관련 개념")],
-                summary=sub_summary[:300],
-                mechanisms=[meaningful_lines[i + 1]] if (i + 1) < len(meaningful_lines) else [f"{sub_part}의 동작 원리 및 설정"],
+                type="concept",
+                tags=["atomic_extracted", "entity"],
+                relations=[Relation(type="part_of", target=cid_primary, reason=f"{clean_title} 문서 내 핵심 등장 요소 및 개념")],
+                summary=ent_info["context"],
+                mechanisms=[ent_info["context"]],
                 tradeoffs={"pros": [], "cons": []},
                 formulas_or_code=[],
                 sources=[f"raw:{raw_doc_id}", source],
-                workspace=self.store.workspace or "default",
+                workspace=target_ws,
                 created_at=today,
                 updated_at=today
             )
             concepts_to_save.append(sub_concept)
-            relations_primary.append(Relation(type=rel_type, target=sub_cid, reason=f"{primary_name}에서 다루는 핵심 개념"))
+            relations_primary.append(Relation(type="related_to", target=ent_cid, reason=f"{clean_title}에 소속/등장하는 주요 개념"))
 
+        # 3. Create Primary Document Concept
         primary_concept = Concept(
             id=cid_primary,
-            name=primary_name,
+            name=clean_title,
             aliases=[],
             type="architecture" if len(concepts_to_save) > 0 else "concept",
-            tags=["atomic_extracted"],
+            tags=["atomic_extracted", "core_doc"],
             relations=relations_primary,
             summary=summary_primary[:300],
             mechanisms=meaningful_lines[2:5] if len(meaningful_lines) > 4 else ["See raw document for detailed mechanism."],
             tradeoffs={"pros": [], "cons": []},
             formulas_or_code=[],
             sources=[f"raw:{raw_doc_id}", source],
-            workspace=self.store.workspace or "default",
+            workspace=target_ws,
             created_at=today,
             updated_at=today
         )
@@ -239,8 +293,9 @@ class Distiller:
         target_ws = self.store.workspace or "default"
         raw_doc_id = self.store.raw.save(title=doc_title, source_uri=source, content=text, workspace=target_ws)
 
-        # Truncate text if excessively long for local context (keep first ~8500 chars)
-        truncated_text = text[:8500]
+        # Clean noise and partition text into semantic chunks if document is long
+        clean_full_text = self._clean_web_noise(text)
+        chunks = self._chunk_text(clean_full_text, chunk_size=7500)
 
         # Fetch existing concept IDs to guide relation linking
         existing_ids = self.store.db.list_all_ids()[:40]
@@ -248,59 +303,56 @@ class Distiller:
         if existing_ids:
             context_hint = f"\nExisting concepts in warehouse to link against if relevant: {', '.join(existing_ids)}"
 
-        user_prompt = f"""Document Title: {doc_title}
+        all_distilled = []
+        for chunk_idx, chunk_text in enumerate(chunks[:5]):
+            section_label = f" (Part {chunk_idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+            user_prompt = f"""Document Title: {doc_title}{section_label}
 Source URI: {source}
 {context_hint}
 
 Content:
 \"\"\"
-{truncated_text}
+{chunk_text}
 \"\"\"
 
 Extract the atomic concept(s) as JSON according to system instructions."""
 
-        # Step 2: Call local LLM
-        try:
-            response_text = self.llm.generate(
-                prompt=user_prompt,
-                system=DISTILLER_SYSTEM_PROMPT,
-                json_format=True
-            )
-            cleaned_json = self._clean_json_output(response_text)
-            data = json.loads(cleaned_json)
+            # Step 2: Call local LLM
+            try:
+                response_text = self.llm.generate(
+                    prompt=user_prompt,
+                    system=DISTILLER_SYSTEM_PROMPT,
+                    json_format=True
+                )
+                cleaned_json = self._clean_json_output(response_text)
+                data = json.loads(cleaned_json)
 
-            # Unwrap { "concepts": [ ... ] } or { "items": [ ... ] }
-            if isinstance(data, dict):
-                if "concepts" in data and isinstance(data["concepts"], list):
-                    data = data["concepts"]
-                elif "items" in data and isinstance(data["items"], list):
-                    data = data["items"]
-                elif "data" in data and isinstance(data["data"], list):
-                    data = data["data"]
-                else:
-                    data = [data]
+                # Unwrap { "concepts": [ ... ] } or { "items": [ ... ] }
+                if isinstance(data, dict):
+                    if "concepts" in data and isinstance(data["concepts"], list):
+                        data = data["concepts"]
+                    elif "items" in data and isinstance(data["items"], list):
+                        data = data["items"]
+                    elif "data" in data and isinstance(data["data"], list):
+                        data = data["data"]
+                    else:
+                        data = [data]
 
-            if not isinstance(data, list) or not data:
-                raise ValueError("LLM returned empty or non-list data")
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            name = item.get("name") or item.get("id") or ""
+                            if name and name.strip().lower() not in ("concept", "none", "null", ""):
+                                all_distilled.append(item)
+            except Exception:
+                pass
 
-            # Validate that there is at least one meaningful item
-            valid_items = []
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-                name = item.get("name") or item.get("id") or ""
-                summary = item.get("summary") or ""
-                if (not name or name.strip().lower() in ("concept", "none", "null", "")) and not summary:
-                    continue
-                valid_items.append(item)
-
-            if not valid_items:
-                raise ValueError("LLM returned empty concepts without meaningful name or summary")
-
-            data = valid_items
-        except Exception as e:
-            print(f"[LLMWiki] Notice: Local LLM distillation unavailable or returned empty ({e}). Using baseline extractor.", file=sys.stderr)
+        # If LLM returned nothing across chunks or failed, use deep entity fallback
+        if not all_distilled:
+            print("[LLMWiki] Notice: Local LLM distillation unavailable or returned empty. Using baseline deep extractor.", file=sys.stderr)
             return self._heuristic_distill_fallback(doc_title, text, source, raw_doc_id)
+
+        data = all_distilled
 
         today = datetime.now().strftime("%Y-%m-%d")
         created_concepts = []
