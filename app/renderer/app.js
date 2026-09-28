@@ -62,6 +62,24 @@ window.addEventListener('DOMContentLoaded', async () => {
   }, 8000);
 });
 
+// ─── Global loading bar ──────────────────────────────────────────────────────
+let _loadingCount = 0;
+function showLoading() {
+  _loadingCount++;
+  document.getElementById('global-loading-bar')?.classList.remove('hidden');
+}
+function hideLoading() {
+  _loadingCount = Math.max(0, _loadingCount - 1);
+  if (_loadingCount === 0) document.getElementById('global-loading-bar')?.classList.add('hidden');
+}
+
+// Wrap any async fn with loading bar shown for its duration
+async function withLoading(fn) {
+  showLoading();
+  try { return await fn(); }
+  finally { hideLoading(); }
+}
+
 async function refreshAll() {
   // Prioritize active tab data to eliminate Python process congestion
   try {
@@ -108,21 +126,27 @@ function activateTab(tabId, { fit = true } = {}) {
       ensureGraphLoop();
     });
   } else if (tabId === 'tab-library') {
-    // When opening library tab, ensure fresh list
-    loadConcepts();
-    loadRawDocs();
+    // When opening library tab, ensure fresh list with loading indicator
+    withLoading(async () => {
+      await Promise.all([loadConcepts(), loadRawDocs()]);
+    });
   } else if (tabId === 'tab-activity') {
-    loadLogs();
+    withLoading(loadLogs);
   }
 }
 
 async function loadStats(ws = state.currentWorkspace) {
-  const stats = await window.llmwiki.getStats(ws);
-  if (!stats || stats.error) return;
-  document.getElementById('stat-raw').textContent = formatNumber(stats.total_sources);
-  document.getElementById('stat-concepts').textContent = formatNumber(stats.total_concepts);
-  const visibleConnections = state.graph.edges.length || stats.total_relations;
-  document.getElementById('stat-relations').textContent = formatNumber(visibleConnections);
+  showLoading();
+  try {
+    const stats = await window.llmwiki.getStats(ws);
+    if (!stats || stats.error) return;
+    document.getElementById('stat-raw').textContent = formatNumber(stats.total_sources);
+    document.getElementById('stat-concepts').textContent = formatNumber(stats.total_concepts);
+    const visibleConnections = state.graph.edges.length || stats.total_relations;
+    document.getElementById('stat-relations').textContent = formatNumber(visibleConnections);
+  } finally {
+    hideLoading();
+  }
 }
 
 function formatNumber(value) {
@@ -134,8 +158,14 @@ function setupGraph() {
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
   document.getElementById('btn-reload-graph').addEventListener('click', async () => {
-    await loadGraph();
-    fitGraph();
+    const btn = document.getElementById('btn-reload-graph');
+    if (btn) btn.classList.add('btn-loading');
+    try {
+      await Promise.all([loadGraph(), loadStats()]);
+      fitGraph();
+    } finally {
+      if (btn) btn.classList.remove('btn-loading');
+    }
   });
   document.getElementById('btn-fit-graph').addEventListener('click', fitGraph);
   document.getElementById('graph-search-input').addEventListener('input', event => {
@@ -277,36 +307,41 @@ function resizeCanvas() {
 }
 
 async function loadGraph(ws = state.currentWorkspace) {
-  const data = await window.llmwiki.getGraph(ws);
-  if (!data || data.error || !Array.isArray(data.nodes)) return;
-  const existing = new Map(state.graph.nodes.map(node => [node.id, node]));
-  const count = data.nodes.length;
-  const nodes = data.nodes.map((node, index) => {
-    const previous = existing.get(node.id);
-    const angle = index * 2.399963229728653;
-    const initialDistance = 70 + Math.sqrt(index) * 64;
-    const baseRadius = 16;
-    const sourcesCount = node.sources_count || 1;
-    const radius = baseRadius + Math.min((sourcesCount - 1) * 3.5, 14);
-    return {
-      ...node,
-      x: previous?.x ?? Math.cos(angle) * initialDistance,
-      y: previous?.y ?? Math.sin(angle) * initialDistance,
-      vx: previous?.vx ?? 0,
-      vy: previous?.vy ?? 0,
-      radius,
-    };
-  });
-  const nodeMap = new Map(nodes.map(node => [node.id, node]));
-  const edges = (data.edges || []).map(edge => ({
-    ...edge,
-    source: nodeMap.get(edge.source),
-    target: nodeMap.get(edge.target),
-  })).filter(edge => edge.source && edge.target);
-  state.graph = { nodes, edges };
-  document.getElementById('stat-relations').textContent = formatNumber(edges.length);
-  document.getElementById('graph-empty').classList.toggle('hidden', nodes.length > 0);
-  if (!existing.size) requestAnimationFrame(fitGraph);
+  showLoading();
+  try {
+    const data = await window.llmwiki.getGraph(ws);
+    if (!data || data.error || !Array.isArray(data.nodes)) return;
+    const existing = new Map(state.graph.nodes.map(node => [node.id, node]));
+    const count = data.nodes.length;
+    const nodes = data.nodes.map((node, index) => {
+      const previous = existing.get(node.id);
+      const angle = index * 2.399963229728653;
+      const initialDistance = 70 + Math.sqrt(index) * 64;
+      const baseRadius = 16;
+      const sourcesCount = node.sources_count || 1;
+      const radius = baseRadius + Math.min((sourcesCount - 1) * 3.5, 14);
+      return {
+        ...node,
+        x: previous?.x ?? Math.cos(angle) * initialDistance,
+        y: previous?.y ?? Math.sin(angle) * initialDistance,
+        vx: previous?.vx ?? 0,
+        vy: previous?.vy ?? 0,
+        radius,
+      };
+    });
+    const nodeMap = new Map(nodes.map(node => [node.id, node]));
+    const edges = (data.edges || []).map(edge => ({
+      ...edge,
+      source: nodeMap.get(edge.source),
+      target: nodeMap.get(edge.target),
+    })).filter(edge => edge.source && edge.target);
+    state.graph = { nodes, edges };
+    document.getElementById('stat-relations').textContent = formatNumber(edges.length);
+    document.getElementById('graph-empty').classList.toggle('hidden', nodes.length > 0);
+    if (!existing.size) requestAnimationFrame(fitGraph);
+  } finally {
+    hideLoading();
+  }
 }
 
 let liveRefreshDebounceTimer = null;
@@ -634,7 +669,13 @@ async function showInspector(node) {
     element.textContent = tag;
     return element;
   }));
-  const full = await window.llmwiki.getConcept(node.id);
+  showLoading();
+  let full;
+  try {
+    full = await window.llmwiki.getConcept(node.id);
+  } finally {
+    hideLoading();
+  }
   document.getElementById('inspector-summary').textContent = full?.summary || '아직 작성된 요약이 없습니다.';
   renderList('inspector-mechanisms', full?.mechanisms || [], '정리된 메커니즘이 없습니다.');
   const links = (full?.graph_connections || []).map(link => {
@@ -729,8 +770,13 @@ function setupLibrary() {
         return;
       }
       if (!query) return renderConcepts(state.concepts);
-      const hits = await window.llmwiki.search({ query, mode: 'hybrid', limit: 50 });
-      renderConcepts(hits || []);
+      showLoading();
+      try {
+        const hits = await window.llmwiki.search({ query, mode: 'hybrid', limit: 50, workspace: state.currentWorkspace });
+        renderConcepts(hits || []);
+      } finally {
+        hideLoading();
+      }
     }, 180);
   });
 }
@@ -747,7 +793,12 @@ function setLibraryMode(mode) {
   const query = searchInput.value.trim();
   if (concepts) {
     if (!query) renderConcepts(state.concepts);
-    else window.llmwiki.search({ query, mode: 'hybrid', limit: 50, workspace: state.currentWorkspace }).then(hits => renderConcepts(hits || []));
+    else {
+      showLoading();
+      window.llmwiki.search({ query, mode: 'hybrid', limit: 50, workspace: state.currentWorkspace })
+        .then(hits => renderConcepts(hits || []))
+        .finally(() => hideLoading());
+    }
   } else {
     renderRawDocs(filterRawDocs(query));
   }
@@ -755,9 +806,14 @@ function setLibraryMode(mode) {
 }
 
 async function loadConcepts(ws = state.currentWorkspace) {
-  state.concepts = (await window.llmwiki.listConcepts(ws)) || [];
-  pruneLibrarySelection('concepts', new Set(state.concepts.map(concept => concept.concept_id || concept.id)));
-  if (state.libraryMode === 'concepts') renderConcepts(state.concepts);
+  showLoading();
+  try {
+    state.concepts = (await window.llmwiki.listConcepts(ws)) || [];
+    pruneLibrarySelection('concepts', new Set(state.concepts.map(concept => concept.concept_id || concept.id)));
+    if (state.libraryMode === 'concepts') renderConcepts(state.concepts);
+  } finally {
+    hideLoading();
+  }
 }
 
 function renderConcepts(concepts) {
@@ -844,9 +900,14 @@ function openConceptFromLibrary(concept) {
 }
 
 async function loadRawDocs(ws = state.currentWorkspace) {
-  state.rawDocs = (await window.llmwiki.listRaw(ws)) || [];
-  pruneLibrarySelection('raw', new Set(state.rawDocs.map(doc => doc.id)));
-  if (state.libraryMode === 'raw') renderRawDocs(filterRawDocs(document.getElementById('db-search-input').value.trim()));
+  showLoading();
+  try {
+    state.rawDocs = (await window.llmwiki.listRaw(ws)) || [];
+    pruneLibrarySelection('raw', new Set(state.rawDocs.map(doc => doc.id)));
+    if (state.libraryMode === 'raw') renderRawDocs(filterRawDocs(document.getElementById('db-search-input').value.trim()));
+  } finally {
+    hideLoading();
+  }
 }
 
 function filterRawDocs(query) {
@@ -1831,8 +1892,8 @@ function setupWorkspaces() {
 async function loadWorkspaces() {
   const workspaces = (await window.llmwiki.listWorkspaces()) || [];
   state.workspaces = workspaces;
-  const current = (await window.llmwiki.currentWorkspace())?.active_workspace || 'default';
-  if (!state.currentWorkspace || state.currentWorkspace === 'default') {
+  if (!state.currentWorkspace) {
+    const current = (await window.llmwiki.currentWorkspace())?.active_workspace || 'default';
     state.currentWorkspace = current;
   }
 
@@ -1853,6 +1914,7 @@ async function loadWorkspaces() {
       opt.selected = (ws.id === state.currentWorkspace);
       select.appendChild(opt);
     });
+    select.value = state.currentWorkspace;
   }
 
   const ingestSelect = document.getElementById('ingest-target-workspace');
@@ -1865,6 +1927,9 @@ async function loadWorkspaces() {
       opt.selected = (ws.id === state.currentWorkspace || (state.currentWorkspace === 'all' && ws.id === 'default'));
       ingestSelect.appendChild(opt);
     });
+    if (state.currentWorkspace !== 'all') {
+      ingestSelect.value = state.currentWorkspace;
+    }
   }
 
   renderWorkspacesTable(workspaces, state.currentWorkspace);
@@ -1885,12 +1950,9 @@ function renderWorkspacesTable(workspaces, activeId) {
     tr.classList.toggle('selected-row', isActive);
 
     // Clicking anywhere on the row switches to this workspace
-    tr.addEventListener('click', async (e) => {
-      // Don't trigger if clicked on a button or delete action
+    tr.addEventListener('click', (e) => {
       if (e.target.closest('button')) return;
-      await switchWorkspace(ws.id);
-      const modal = document.getElementById('modal-workspaces');
-      if (modal) modal.classList.add('hidden');
+      switchWorkspace(ws.id);
     });
 
     const idCell = document.createElement('td');
@@ -1922,11 +1984,9 @@ function renderWorkspacesTable(workspaces, activeId) {
       switchBtn.style.fontSize = '11px';
       switchBtn.textContent = '선택';
       switchBtn.title = '이 워크스페이스로 전환';
-      switchBtn.addEventListener('click', async (e) => {
+      switchBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        await switchWorkspace(ws.id);
-        const modal = document.getElementById('modal-workspaces');
-        if (modal) modal.classList.add('hidden');
+        switchWorkspace(ws.id);
       });
       actionCell.appendChild(switchBtn);
     }
@@ -1955,22 +2015,40 @@ function renderWorkspacesTable(workspaces, activeId) {
 }
 
 async function switchWorkspace(wsId) {
+  if (!wsId) return;
   state.currentWorkspace = wsId;
-  if (wsId !== 'all') {
-    await window.llmwiki.switchWorkspace(wsId);
-  }
 
-  // Reload workspaces metadata first so select options exist
-  await loadWorkspaces();
-
-  // Explicitly sync both selects
+  // 1. 즉각적인 UI 반영 (Optimistic UI update)
+  updateTopBarWorkspace(wsId);
   const select = document.getElementById('workspace-select');
   if (select) select.value = wsId;
   const ingestSelect = document.getElementById('ingest-target-workspace');
   if (ingestSelect && wsId !== 'all') ingestSelect.value = wsId;
 
-  updateTopBarWorkspace(state.currentWorkspace);
-  await refreshAll();
+  // 모달 닫기 및 활성 표시 즉시 처리
+  renderWorkspacesTable(state.workspaces, wsId);
+  const modal = document.getElementById('modal-workspaces');
+  if (modal) modal.classList.add('hidden');
+
+  // 로딩 상태 시작
+  showLoading();
+  const pill = document.getElementById('topbar-ws-pill');
+  if (pill) pill.classList.add('ws-switching');
+  if (select) select.classList.add('ws-loading');
+
+  try {
+    if (wsId !== 'all') {
+      await window.llmwiki.switchWorkspace(wsId);
+    }
+    await loadWorkspaces();
+    await refreshAll();
+  } catch (err) {
+    console.error('Failed to switch workspace:', err);
+  } finally {
+    hideLoading();
+    if (pill) pill.classList.remove('ws-switching');
+    if (select) select.classList.remove('ws-loading');
+  }
 }
 
 async function createNewWorkspace() {
@@ -2044,17 +2122,23 @@ async function deleteWorkspace(id) {
   if (!confirm(`'${id}' 워크스페이스를 삭제하시겠습니까? 해당 워크스페이스의 개념들은 기본 워크스페이스로 귀속되거나 정리됩니다.`)) {
     return;
   }
-  const res = await window.llmwiki.deleteWorkspace(id);
-  if (res?.error) {
-    alert(`삭제 실패: ${res.error}`);
-    return;
+  showLoading();
+  try {
+    const res = await window.llmwiki.deleteWorkspace(id);
+    if (res?.error) {
+      alert(`삭제 실패: ${res.error}`);
+      return;
+    }
+    await switchWorkspace('default');
+  } finally {
+    hideLoading();
   }
-  await switchWorkspace('default');
 }
 
 async function testWorkspaceRouting() {
   const queryInput = document.getElementById('input-route-query');
   const resultBox = document.getElementById('route-result-box');
+  const routeBtn = document.getElementById('btn-test-route');
   const query = queryInput.value.trim();
   if (!query) {
     resultBox.classList.remove('hidden');
@@ -2064,12 +2148,19 @@ async function testWorkspaceRouting() {
 
   resultBox.classList.remove('hidden');
   resultBox.textContent = '질의어를 임베딩하고 워크스페이스 중심점과 비교 분석 중…';
+  if (routeBtn) routeBtn.classList.add('btn-loading');
+  showLoading();
 
-  const res = await window.llmwiki.routeWorkspace(query);
-  if (res && res.recommended_workspace) {
-    const similarity = res.score ? (res.score * 100).toFixed(1) : 0;
-    resultBox.innerHTML = `<strong>추천 워크스페이스:</strong> <code style="color:#58a6ff; font-weight:700;">${res.recommended_workspace}</code> (유사도: ${similarity}%)<br><small style="color:var(--muted)">검색 및 질의 시 이 워크스페이스가 최우선으로 매칭됩니다.</small>`;
-  } else {
-    resultBox.innerHTML = `<strong>결과:</strong> 특정 워크스페이스와의 유사도 임계치를 넘지 않아 <code style="color:#58a6ff;">전체(All)</code> 대상 전역 탐색이 권장됩니다.`;
+  try {
+    const res = await window.llmwiki.routeWorkspace(query);
+    if (res && res.recommended_workspace) {
+      const similarity = res.score ? (res.score * 100).toFixed(1) : 0;
+      resultBox.innerHTML = `<strong>추천 워크스페이스:</strong> <code style="color:#58a6ff; font-weight:700;">${res.recommended_workspace}</code> (유사도: ${similarity}%)<br><small style="color:var(--muted)">검색 및 질의 시 이 워크스페이스가 최우선으로 매칭됩니다.</small>`;
+    } else {
+      resultBox.innerHTML = `<strong>결과:</strong> 특정 워크스페이스와의 유사도 임계치를 넘지 않아 <code style="color:#58a6ff;">전체(All)</code> 대상 전역 탐색이 권장됩니다.`;
+    }
+  } finally {
+    hideLoading();
+    if (routeBtn) routeBtn.classList.remove('btn-loading');
   }
 }
