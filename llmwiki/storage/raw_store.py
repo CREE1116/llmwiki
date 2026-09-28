@@ -100,12 +100,13 @@ class RawStore:
 
     def list_all(self, limit: int = 50, workspace: Optional[str] = None) -> list:
         """List archived raw documents, optionally filtered by workspace."""
+        resolved_ws = self.db.resolve_workspace_id(workspace)
         with self.db.get_connection() as conn:
-            if workspace and workspace != "all":
+            if resolved_ws:
                 cursor = conn.execute("""
                 SELECT id, title, source_uri, char_count, workspace_id, created_at
                 FROM raw_documents WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?
-                """, (workspace, limit))
+                """, (resolved_ws, limit))
             else:
                 cursor = conn.execute("""
                 SELECT id, title, source_uri, char_count, workspace_id, created_at
@@ -140,12 +141,13 @@ class RawStore:
         if not q_lower:
             return []
 
+        resolved_ws = self.db.resolve_workspace_id(workspace)
         results = []
         with self.db.get_connection() as conn:
-            if workspace and workspace != "all":
+            if resolved_ws:
                 cursor = conn.execute(
                     "SELECT id, title, source_uri, file_path, workspace_id, created_at FROM raw_documents WHERE workspace_id = ?",
-                    (workspace,)
+                    (resolved_ws,)
                 )
             else:
                 cursor = conn.execute(

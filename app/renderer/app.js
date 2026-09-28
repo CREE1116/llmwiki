@@ -1914,7 +1914,24 @@ async function loadWorkspaces() {
       opt.selected = (ws.id === state.currentWorkspace);
       select.appendChild(opt);
     });
-    select.value = state.currentWorkspace;
+
+    if (state.currentWorkspace) {
+      const exists = Array.from(select.options).some(o => o.value === state.currentWorkspace);
+      if (exists) {
+        select.value = state.currentWorkspace;
+      } else {
+        const found = workspaces.find(w =>
+          w.id.toLowerCase() === state.currentWorkspace.toLowerCase() ||
+          (w.name && w.name.toLowerCase() === state.currentWorkspace.toLowerCase()) ||
+          (state.currentWorkspace === 'typemoon' && (w.id === '타입문' || (w.name && w.name.includes('타입문')))) ||
+          (state.currentWorkspace === '타입문' && (w.id === 'typemoon' || (w.name && w.name.includes('typemoon'))))
+        );
+        if (found) {
+          state.currentWorkspace = found.id;
+          select.value = found.id;
+        }
+      }
+    }
   }
 
   const ingestSelect = document.getElementById('ingest-target-workspace');
@@ -1927,8 +1944,19 @@ async function loadWorkspaces() {
       opt.selected = (ws.id === state.currentWorkspace || (state.currentWorkspace === 'all' && ws.id === 'default'));
       ingestSelect.appendChild(opt);
     });
-    if (state.currentWorkspace !== 'all') {
-      ingestSelect.value = state.currentWorkspace;
+    if (state.currentWorkspace && state.currentWorkspace !== 'all') {
+      const exists = Array.from(ingestSelect.options).some(o => o.value === state.currentWorkspace);
+      if (exists) {
+        ingestSelect.value = state.currentWorkspace;
+      } else {
+        const found = workspaces.find(w =>
+          w.id.toLowerCase() === state.currentWorkspace.toLowerCase() ||
+          (w.name && w.name.toLowerCase() === state.currentWorkspace.toLowerCase()) ||
+          (state.currentWorkspace === 'typemoon' && (w.id === '타입문' || (w.name && w.name.includes('타입문')))) ||
+          (state.currentWorkspace === '타입문' && (w.id === 'typemoon' || (w.name && w.name.includes('typemoon'))))
+        );
+        if (found) ingestSelect.value = found.id;
+      }
     }
   }
 

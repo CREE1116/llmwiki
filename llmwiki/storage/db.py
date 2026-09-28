@@ -216,13 +216,43 @@ class Database:
         return ws
 
     def get_workspace(self, ws_id: str) -> Optional[Workspace]:
+        if not ws_id:
+            return None
+        clean = ws_id.strip()
         with self.get_connection() as conn:
+            # 1. Exact ID match
             row = conn.execute("""
             SELECT w.*, 
                    (SELECT COUNT(*) FROM concepts WHERE workspace_id = w.id) as concept_count,
                    (SELECT COUNT(*) FROM sources WHERE workspace_id = w.id) as raw_count
             FROM workspaces w WHERE w.id = ?
-            """, (ws_id,)).fetchone()
+            """, (clean,)).fetchone()
+
+            # 2. Case-insensitive or Name match
+            if not row:
+                row = conn.execute("""
+                SELECT w.*, 
+                       (SELECT COUNT(*) FROM concepts WHERE workspace_id = w.id) as concept_count,
+                       (SELECT COUNT(*) FROM sources WHERE workspace_id = w.id) as raw_count
+                FROM workspaces w 
+                WHERE LOWER(w.id) = LOWER(?) OR LOWER(w.name) = LOWER(?)
+                LIMIT 1
+                """, (clean, clean)).fetchone()
+
+            # 3. Known common alias fallback
+            if not row:
+                alias_map = {"typemoon": "타입문", "타입문": "typemoon", "type_moon": "타입문"}
+                if clean.lower() in alias_map:
+                    target_alias = alias_map[clean.lower()]
+                    row = conn.execute("""
+                    SELECT w.*, 
+                           (SELECT COUNT(*) FROM concepts WHERE workspace_id = w.id) as concept_count,
+                           (SELECT COUNT(*) FROM sources WHERE workspace_id = w.id) as raw_count
+                    FROM workspaces w 
+                    WHERE w.id = ? OR w.name = ? OR LOWER(w.id) = LOWER(?) OR LOWER(w.name) = LOWER(?)
+                    LIMIT 1
+                    """, (target_alias, target_alias, target_alias, target_alias)).fetchone()
+
             if not row:
                 return None
             return Workspace(
@@ -235,6 +265,15 @@ class Database:
                 concept_count=row["concept_count"],
                 raw_count=row["raw_count"]
             )
+
+    def resolve_workspace_id(self, ws_id_or_name: Optional[str]) -> Optional[str]:
+        """Resolve a workspace ID, name, or alias to canonical ID in this database."""
+        if not ws_id_or_name or ws_id_or_name in ("all", "*"):
+            return None
+        ws = self.get_workspace(ws_id_or_name)
+        if ws:
+            return ws.id
+        return ws_id_or_name
 
     def list_workspaces(self) -> List[Workspace]:
         with self.get_connection() as conn:
@@ -313,9 +352,10 @@ class Database:
         else:
             fts_query = f'"{clean_words[0]}"*'
 
+        resolved_ws = self.resolve_workspace_id(workspace)
         with self.get_connection() as conn:
             try:
-                if workspace and workspace != "all":
+                if resolved_ws:
                     sql = """
                     SELECT
                         c.id, c.name, c.type, c.summary, c.tags_json, c.workspace_id,
@@ -326,7 +366,7 @@ class Database:
                     ORDER BY score ASC
                     LIMIT ?
                     """
-                    cursor = conn.execute(sql, (fts_query, workspace, limit))
+                    cursor = conn.execute(sql, (fts_query, resolved_ws, limit))
                 else:
                     sql = """
                     SELECT
@@ -343,14 +383,14 @@ class Database:
                 rows = cursor.fetchall()
             except sqlite3.OperationalError:
                 # Fallback to simple LIKE search if FTS query syntax error occurs
-                if workspace and workspace != "all":
+                if resolved_ws:
                     sql = """
                     SELECT id, name, type, summary, tags_json, workspace_id, -1.0 as score
                     FROM concepts
                     WHERE (name LIKE ? OR summary LIKE ? OR id LIKE ?) AND workspace_id = ?
                     LIMIT ?
                     """
-                    cursor = conn.execute(sql, (f"%{query}%", f"%{query}%", f"%{query}%", workspace, limit))
+                    cursor = conn.execute(sql, (f"%{query}%", f"%{query}%", f"%{query}%", resolved_ws, limit))
                 else:
                     sql = """
                     SELECT id, name, type, summary, tags_json, workspace_id, -1.0 as score
@@ -404,9 +444,10 @@ class Database:
 
     def list_all_ids(self, workspace: Optional[str] = None) -> List[str]:
         """List all concept IDs in the store, optionally filtered by workspace."""
+        resolved_ws = self.resolve_workspace_id(workspace)
         with self.get_connection() as conn:
-            if workspace and workspace != "all":
-                cursor = conn.execute("SELECT id FROM concepts WHERE workspace_id = ? ORDER BY id ASC", (workspace,))
+            if resolved_ws:
+                cursor = conn.execute("SELECT id FROM concepts WHERE workspace_id = ? ORDER BY id ASC", (resolved_ws,))
             else:
                 cursor = conn.execute("SELECT id FROM concepts ORDER BY id ASC")
             return [r["id"] for r in cursor.fetchall()]
@@ -510,15 +551,16 @@ class Database:
 
     def get_full_graph_data(self, workspace: Optional[str] = None) -> Dict[str, Any]:
         """Return all nodes and edges for visualization in Electron/Web, optionally scoped to a workspace."""
+        resolved_ws = self.resolve_workspace_id(workspace)
         with self.get_connection() as conn:
-            if workspace and workspace != "all":
+            if resolved_ws:
                 c_cursor = conn.execute("""
                 SELECT c.id, c.name, c.type, c.summary, c.tags_json, c.workspace_id, COUNT(s.id) as sources_count
                 FROM concepts c
                 LEFT JOIN sources s ON c.id = s.concept_id
                 WHERE c.workspace_id = ?
                 GROUP BY c.id
-                """, (workspace,))
+                """, (resolved_ws,))
             else:
                 c_cursor = conn.execute("""
                 SELECT c.id, c.name, c.type, c.summary, c.tags_json, c.workspace_id, COUNT(s.id) as sources_count
@@ -544,7 +586,7 @@ class Database:
             e_cursor = conn.execute("SELECT source_id, relation_type, target_id, reason FROM relations")
             edges = []
             for r in e_cursor.fetchall():
-                if workspace and workspace != "all":
+                if resolved_ws:
                     if r["source_id"] not in node_ids or r["target_id"] not in node_ids:
                         continue
                 edges.append({
@@ -601,18 +643,19 @@ class Database:
 
     def stats(self, workspace: Optional[str] = None) -> Dict[str, Any]:
         """Return counts of concepts, relations, sources, and query logs, optionally for a workspace."""
+        resolved_ws = self.resolve_workspace_id(workspace)
         with self.get_connection() as conn:
-            if workspace and workspace != "all":
-                c_count = conn.execute("SELECT COUNT(*) FROM concepts WHERE workspace_id = ?", (workspace,)).fetchone()[0]
+            if resolved_ws:
+                c_count = conn.execute("SELECT COUNT(*) FROM concepts WHERE workspace_id = ?", (resolved_ws,)).fetchone()[0]
                 r_count = conn.execute("""
                 SELECT COUNT(*) FROM relations r
                 JOIN concepts c ON r.source_id = c.id
                 WHERE c.workspace_id = ?
-                """, (workspace,)).fetchone()[0]
-                s_count = conn.execute("SELECT COUNT(*) FROM sources WHERE workspace_id = ?", (workspace,)).fetchone()[0]
-                l_count = conn.execute("SELECT COUNT(*) FROM query_logs WHERE workspace_id = ?", (workspace,)).fetchone()[0]
-                ws = self.get_workspace(workspace)
-                ws_name = ws.name if ws else workspace
+                """, (resolved_ws,)).fetchone()[0]
+                s_count = conn.execute("SELECT COUNT(*) FROM sources WHERE workspace_id = ?", (resolved_ws,)).fetchone()[0]
+                l_count = conn.execute("SELECT COUNT(*) FROM query_logs WHERE workspace_id = ?", (resolved_ws,)).fetchone()[0]
+                ws = self.get_workspace(resolved_ws)
+                ws_name = ws.name if ws else resolved_ws
             else:
                 c_count = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
                 r_count = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]

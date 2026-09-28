@@ -206,19 +206,15 @@ class Store:
         - 'all' / None: Search across all workspaces without filtering
         - '<workspace_id>': Scope search to specific workspace
         """
-        # Workspace alias support (e.g. 'typemoon' -> '타입문')
-        if workspace and workspace.lower() in ("typemoon", "type_moon"):
-            workspace = "타입문"
-
         ws_filter: Optional[str] = None
         if workspace == "auto":
             routed_ws, route_score = self.vectors.route_query(query)
             if routed_ws:
-                ws_filter = routed_ws
+                ws_filter = self.db.resolve_workspace_id(routed_ws)
         elif workspace in ("all", "*", None):
             ws_filter = None
         else:
-            ws_filter = workspace
+            ws_filter = self.db.resolve_workspace_id(workspace)
 
         # 1. Primary Layer 2 / Layer 3 search
         if mode in ("vector", "semantic"):
